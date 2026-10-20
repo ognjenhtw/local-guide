@@ -21,8 +21,20 @@
       <section id="route-section" hidden>
         <h2 id="route-title"></h2>
         <p id="route-summary"></p>
+        <button id="start-btn" type="button">Start walking</button>
         <ol id="turns"></ol>
       </section>
+
+      <section id="walk-section" hidden>
+        <p id="nav-status"></p>
+        <button id="stop-btn" type="button">Stop</button>
+        <div id="transcript"></div>
+      </section>
+
+      <details id="settings">
+        <summary>Settings</summary>
+        <label>Gemini API key <input id="gemini-key" type="password" autocomplete="off" /></label>
+      </details>
 
       <details id="debug" open>
         <summary>Log</summary>

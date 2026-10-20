@@ -1,6 +1,9 @@
 import { log } from './log.js';
 import { loadKakao, searchPlaces, landmarkNear } from './kakao.js';
 import { walkingRoute } from './tmap.js';
+import { LiveSession } from './gemini.js';
+import { startAudio, play, stopPlayback, stopAudio } from './audio.js';
+import { outboundInstruction, Navigator } from './guide.js';
 
 // Used when the device can't give a GPS fix (e.g. testing on a laptop).
 const FALLBACK_START = { lat: 37.5568, lng: 126.9237, label: 'Hongik Univ. Station (test start)' };
@@ -59,8 +62,87 @@ async function showRoute(dest) {
     li.innerHTML = `<b>${turn.action}</b>${mark}<br><small>${turn.description}</small>`;
     $('turns').appendChild(li);
   }
-  window.currentRoute = route; // handy for inspecting while testing
+  route.dest = dest;
+  window.currentRoute = route;
 }
+
+// --- Walking: live voice + GPS ---------------------------------------------
+
+const keyInput = $('gemini-key');
+try { keyInput.value = localStorage.getItem('geminiKey') || import.meta.env.VITE_GEMINI_API_KEY || ''; } catch { /* storage blocked */ }
+keyInput.onchange = () => { try { localStorage.setItem('geminiKey', keyInput.value.trim()); } catch { /* storage blocked */ } };
+
+let session, watchId, navigator_, factTimer, wakeLock;
+
+function addLine(who, text) {
+  const box = $('transcript');
+  const last = box.lastElementChild;
+  // Transcripts arrive in fragments; keep extending the current speaker's line.
+  if (last && last.dataset.who === who) last.textContent += text;
+  else {
+    const p = document.createElement('p');
+    p.dataset.who = who;
+    p.className = who;
+    p.textContent = text;
+    box.appendChild(p);
+  }
+}
+
+async function startWalk() {
+  const route = window.currentRoute;
+  const apiKey = keyInput.value.trim();
+  if (!route) return log('Pick a destination first');
+  if (!apiKey) return log('Enter the Gemini API key in Settings');
+
+  $('route-section').hidden = true;
+  $('walk-section').hidden = false;
+
+  session = new LiveSession({
+    apiKey,
+    systemInstruction: outboundInstruction(route.dest, route),
+    onAudio: play,
+    onInterrupted: stopPlayback,
+    onTranscript: addLine,
+  });
+  await startAudio(chunk => session.sendAudio(chunk)); // inside the tap, so iOS allows audio
+  await session.connect();
+  session.sendFacts('[NAV] The walker is ready at the start. Greet them briefly and tell them how to begin.', true);
+
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
+
+  navigator_ = new Navigator(route);
+  let latest = null, announced = -1, nudged = false;
+  watchId = navigator.geolocation.watchPosition(p => {
+    latest = { lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy };
+    const f = navigator_.update(latest);
+    $('nav-status').textContent = f.text.replace('[NAV] ', '');
+    if (f.done) return;
+    // Moments worth a reply: approaching the next turn, or standing still for a while.
+    if (f.distance < 40 && announced !== navigator_.next) {
+      announced = navigator_.next;
+      session.sendFacts(`${f.text} The turn is coming up.`, true);
+    }
+    if (f.still >= 12 && !nudged) { nudged = true; session.sendFacts(`${f.text} The walker has stopped.`, true); }
+    if (f.still < 3) nudged = false;
+  }, e => log('GPS error:', e.message), { enableHighAccuracy: true, maximumAge: 0 });
+
+  // Routine facts every 8 s, added silently so the guide stays up to date.
+  factTimer = setInterval(() => latest && session.sendFacts(navigator_.update(latest).text, false), 8000);
+}
+
+function stopWalk() {
+  clearInterval(factTimer);
+  if (watchId != null) navigator.geolocation.clearWatch(watchId);
+  session?.close();
+  stopAudio();
+  wakeLock?.release?.();
+  $('walk-section').hidden = true;
+  $('route-section').hidden = false;
+  log('walk stopped');
+}
+
+$('start-btn').onclick = () => startWalk().catch(err => log('ERROR', err.message));
+$('stop-btn').onclick = stopWalk;
 
 $('search-form').addEventListener('submit', e => onSearch(e).catch(err => log('ERROR', err.message)));
 

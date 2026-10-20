@@ -21,5 +21,11 @@ ul, ol { padding-left: 0; list-style: none; }
 #results small, #route-summary, .turn small { color: var(--muted); }
 .turn { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .turn b { display: block; }
-#debug { margin-top: 24px; }
+#start-btn, #stop-btn { width: 100%; margin: 8px 0 12px; }
+#stop-btn { background: #b42318; }
+#nav-status { color: var(--muted); font-size: 14px; }
+#transcript p { margin: 6px 0; }
+#transcript .guide { color: var(--accent); }
+#settings, #debug { margin-top: 24px; }
+#settings label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--muted); margin-top: 8px; }
 #log { font-size: 12px; white-space: pre-wrap; color: var(--muted); max-height: 40vh; overflow: auto; }
