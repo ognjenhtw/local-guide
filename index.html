@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Local</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Local</h1>
+
+      <section id="search-section">
+        <form id="search-form">
+          <input id="search-input" type="search" placeholder="Where do you want to go?" autocomplete="off" />
+          <button type="submit">Search</button>
+        </form>
+        <ul id="results"></ul>
+      </section>
+
+      <section id="route-section" hidden>
+        <h2 id="route-title"></h2>
+        <p id="route-summary"></p>
+        <ol id="turns"></ol>
+      </section>
+
+      <details id="debug" open>
+        <summary>Log</summary>
+        <pre id="log"></pre>
+      </details>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

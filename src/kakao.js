@@ -1,0 +1,56 @@
+// Kakao Maps JavaScript SDK: destination search and landmark lookup.
+// The JavaScript key only works from domains registered in Kakao Developers.
+const KEY = import.meta.env.VITE_KAKAO_JS_KEY;
+
+let places;
+
+export function loadKakao() {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KEY}&libraries=services&autoload=false`;
+    s.onload = () => window.kakao.maps.load(() => {
+      places = new window.kakao.maps.services.Places();
+      resolve();
+    });
+    s.onerror = () => reject(new Error('Kakao SDK failed to load (check the key and the registered domain)'));
+    document.head.appendChild(s);
+  });
+}
+
+function call(fn, ...args) {
+  return new Promise(resolve => {
+    fn.call(places, ...args.slice(0, -1), (data, status) => {
+      resolve(status === window.kakao.maps.services.Status.OK ? data : []);
+    }, args[args.length - 1]);
+  });
+}
+
+// Places matching what the walker typed, nearest first.
+export function searchPlaces(query, { lat, lng }) {
+  const location = new window.kakao.maps.LatLng(lat, lng);
+  return call(places.keywordSearch, query, {
+    location,
+    sort: window.kakao.maps.services.SortBy.DISTANCE,
+  });
+}
+
+// Categories that make good landmarks, in order of preference.
+const LANDMARK_CATEGORIES = ['CS2', 'CE7', 'PM9', 'BK9', 'SW8'];
+
+// The nearest recognisable place within `radius` metres of a turn.
+export async function landmarkNear({ lat, lng }, radius = 40) {
+  const location = new window.kakao.maps.LatLng(lat, lng);
+  const results = await Promise.all(LANDMARK_CATEGORIES.map(code =>
+    call(places.categorySearch, code, {
+      location,
+      radius,
+      sort: window.kakao.maps.services.SortBy.DISTANCE,
+    })));
+  const all = results.flat().map(p => ({
+    name: p.place_name,
+    category: p.category_group_name,
+    distance: Number(p.distance),
+  }));
+  all.sort((a, b) => a.distance - b.distance);
+  return all[0] || null;
+}
