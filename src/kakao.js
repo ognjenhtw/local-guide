@@ -3,21 +3,27 @@
 const KEY = import.meta.env.VITE_KAKAO_JS_KEY;
 
 let places;
+let ready;
 
 export function loadKakao() {
-  return new Promise((resolve, reject) => {
+  ready ??= new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KEY}&libraries=services&autoload=false`;
     s.onload = () => window.kakao.maps.load(() => {
       places = new window.kakao.maps.services.Places();
       resolve();
     });
-    s.onerror = () => reject(new Error('Kakao SDK failed to load (check the key and the registered domain)'));
+    s.onerror = () => {
+      ready = null; // allow a retry on the next search
+      reject(new Error('Kakao map service could not load: check the internet connection, or turn off ad blockers for this site'));
+    };
     document.head.appendChild(s);
   });
+  return ready;
 }
 
-function call(fn, ...args) {
+async function call(fn, ...args) {
+  await loadKakao(); // searching before the SDK has loaded just waits for it
   return new Promise(resolve => {
     fn.call(places, ...args.slice(0, -1), (data, status) => {
       resolve(status === window.kakao.maps.services.Status.OK ? data : []);
@@ -26,7 +32,8 @@ function call(fn, ...args) {
 }
 
 // Places matching what the walker typed, nearest first.
-export function searchPlaces(query, { lat, lng }) {
+export async function searchPlaces(query, { lat, lng }) {
+  await loadKakao();
   const location = new window.kakao.maps.LatLng(lat, lng);
   return call(places.keywordSearch, query, {
     location,
@@ -39,6 +46,7 @@ const LANDMARK_CATEGORIES = ['CS2', 'CE7', 'PM9', 'BK9', 'SW8'];
 
 // The nearest recognisable place within `radius` metres of a turn.
 export async function landmarkNear({ lat, lng }, radius = 40) {
+  await loadKakao();
   const location = new window.kakao.maps.LatLng(lat, lng);
   const results = await Promise.all(LANDMARK_CATEGORIES.map(code =>
     call(places.categorySearch, code, {
