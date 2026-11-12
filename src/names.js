@@ -35,6 +35,6 @@ export function romanize(text) {
 export function englishName(name, brand) {
   const key = brand && BRANDS[brand] ? brand : Object.keys(BRANDS).find(b => name.startsWith(b));
   if (!key) return undefined;
-  const rest = name.slice(key.length).trim().replace(/점$/, '').trim();
+  const rest = name.slice(key.length).trim().replace(/(지점|점)$/, '').trim();
   return rest ? `${BRANDS[key]} (${romanize(rest)} branch)` : BRANDS[key];
 }

@@ -1,5 +1,6 @@
 // The guide: who it is, what it knows, the tools it can use, and the walk tracker that feeds it.
 import { distance, bearing, side, compass, destinationPoint, lineDistance } from './geo.js';
+import { romanize, englishName } from './names.js';
 
 // Chains by their English name; other places by their Korean name plus how it reads.
 const placeText = p => [
@@ -14,7 +15,50 @@ const mineText = m => `"${m.label}" (the walker's own landmark${m.place_name ? `
 
 export function turnSummary(t, i) {
   const marks = [...(t.personal || []).map(mineText), ...(t.landmarks || []).map(placeText)];
-  return `${i + 1}. ${t.action}. Landmarks there: ${marks.length ? marks.join('; ') : t.tmapLandmark || 'nothing listed'}.`;
+  return `${i + 1}. ${stepText(t)} [all landmarks there: ${marks.length ? marks.join('; ') : t.tmapLandmark || 'nothing listed'}]`;
+}
+
+// Korean names as the walker would hear them said: "다산로" -> "Dasanro".
+const say = s => (s ? romanize(s) : s);
+// A name from TMAP: English for chains ("Hana Bank (Seogyodong branch)"), otherwise Korean plus its reading.
+const tmapName = s => englishName(s) || `${s} [reads "${say(s)}"]`;
+
+const ACTIONS = {
+  left: 'turn left', right: 'turn right', straight: 'keep going straight', 'U-turn': 'turn around',
+  'sharp left': 'take the sharp left', 'slight left': 'bear left', 'slight right': 'bear right', 'sharp right': 'take the sharp right',
+  crosswalk: 'cross at the crosswalk', 'crosswalk, then left': 'cross at the crosswalk, then turn left',
+  'crosswalk, then right': 'cross at the crosswalk, then turn right',
+  "crosswalk (2 o'clock)": 'cross at the crosswalk, heading slightly right', "crosswalk (10 o'clock)": 'cross at the crosswalk, heading slightly left',
+  "crosswalk (4 o'clock)": 'cross at the crosswalk, then go sharp right', "crosswalk (8 o'clock)": 'cross at the crosswalk, then go sharp left',
+  stairs: 'take the stairs',
+  overpass: 'take the footbridge', underpass: 'take the underpass', arrive: 'you arrive',
+};
+
+// One step of the route in plain English, written by code so the guide never has to work out
+// directions itself: what to do, where (landmark and side), then how far along which street.
+export function stepText(t) {
+  const mine = t.personal?.[0];
+  const mark = t.landmarks?.[0];
+  const where = mine ? `at their own landmark "${mine.label}"${mine.side ? ` (${mine.side})` : ''}`
+    : mark ? `at ${mark.en || `${mark.name} [reads "${mark.reads}"]`}${mark.side ? `, ${mark.side}` : ''}`
+      : t.tmapLandmark ? `at ${tmapName(t.tmapLandmark)}`
+        : t.intersection ? `at the ${say(t.intersection)} junction` : '';
+  const leg = t.leg;
+  const then = leg && leg.distance
+    ? `; then walk about ${Math.round(leg.distance / 10) * 10} m${leg.roads.length ? ` along ${leg.roads.map(say).join(' and ')}` : ''}${leg.passes.length ? `, passing ${leg.passes.slice(0, 2).map(tmapName).join(' and ')}` : ''}`
+    : '';
+  const text = `${ACTIONS[t.action] || t.action}${where ? ' ' + where : ''}${then}.`;
+  return text[0].toUpperCase() + text.slice(1);
+}
+
+// The whole way from the walker's next step to the destination, numbered.
+export function directionsText(route, from = 0) {
+  const steps = route.decisions.slice(from).map((t, k) => `${k + 1}. ${stepText(t)}`);
+  const first = route.decisions[from];
+  const lead = from === 0 && first
+    ? `0. From where they are, head towards ${first.landmarks?.[0]?.en || (first.tmapLandmark && tmapName(first.tmapLandmark)) || 'the first turn'} (about ${Math.round(route.startLeg?.distance || 0)} m).`
+    : null;
+  return [lead, ...steps, `Then ${route.dest?.name || 'the destination'} is right there.`].filter(Boolean).join('\n');
 }
 
 const PERSONA = `You are Local, and you're the walker's close friend. Late twenties, grew up in Seoul, knows every alley, and you're genuinely happy to be on the phone with them right now. You two go way back, so there's no politeness to perform: you joke around, tease them a little, get excited about food, complain about hills, and actually care whether they're having a nice walk. They hear you through their earbuds and aren't looking at a map.
@@ -51,6 +95,7 @@ Tools:
 - get_surroundings: real places around them now, with sides. Use it whenever they ask what's around, mention something you need to place, sound lost, or say they can't find a landmark (then also ask what they see).
 - explore_direction: what's that way (ahead, left, right, behind): places, street, neighbourhood, and how much longer the walk gets. Use it for "what if I go the other way" and "what's over there".
 - get_route_status: next turn, its landmarks, distance, whether they're off the route.
+- get_directions: the full remaining route as numbered steps with landmarks, streets and distances.
 - find_place: search near them for something they named.
 - set_my_location: when GPS is off and they've told you where they really are, set their position to that place (a name from find_place). The route is re-planned from there.
 - remember_landmark: save a landmark to the walker's personal map.
@@ -63,8 +108,13 @@ Messages starting with [NAV] are live facts from their GPS, not things they said
 export function outboundInstruction(dest, route, personal) {
   return `${PERSONA}
 
-Right now you lead. You're walking them to ${dest.name}: about ${route.distance} m, ${route.decisions.length} turns:
+Right now you lead. You're walking them to ${dest.name}: about ${route.distance} m, ${route.decisions.length} turns. The planned route (written from map data; trust it over your own reasoning):
 ${route.decisions.map(turnSummary).join('\n')}
+
+Giving directions:
+- Say the next step with its landmark, side and street, the way it's written in the route. Don't work out turns yourself and never invent one.
+- When they ask where you're taking them, what comes after, or how to get there, call get_directions and walk them through the next two or three steps with landmarks and streets.
+- If your position gets corrected (set_my_location), the route is re-planned and the earlier list no longer applies: use only the new directions you get back.
 ${personal.length ? `\nTheir own landmarks near this route: ${personal.map(mineText).join('; ')}.` : ''}
 
 When a [NAV] message says a turn is coming, tell them about it with its landmark and side.
@@ -108,6 +158,11 @@ export const TOOLS = [
   {
     name: 'get_route_status',
     description: 'Progress on the route: next turn with its landmarks, distance to it, the turn after, distance left, how far off the route they are, and how long they have been standing still.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_directions',
+    description: 'The full remaining route from where the walker is to the destination, as numbered steps written from map data: each with what to do, the landmark and its side, the street and the distance.',
     parameters: { type: 'object', properties: {} },
   },
   {
@@ -223,6 +278,7 @@ export class Navigator {
   turnFacts(t) {
     if (!t) return null;
     return {
+      step: stepText(t),
       action: t.action,
       distance_m: Math.round(distance(this.pos, t)),
       landmarks: [...(t.personal || []).map(mineText), ...(t.landmarks || []).map(placeText)],

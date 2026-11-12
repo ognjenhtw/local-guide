@@ -2,7 +2,7 @@ import { log } from './log.js';
 import { loadKakao, searchPlaces, placesNear, findNear, areaAt, LANDMARK_TYPES, SURROUNDING_TYPES } from './kakao.js';
 import { walkingRoute } from './tmap.js';
 import { PROVIDERS, createSession } from './providers/index.js';
-import { outboundInstruction, returnInstruction, Navigator, TOOLS } from './guide.js';
+import { outboundInstruction, returnInstruction, Navigator, TOOLS, directionsText } from './guide.js';
 import { side, distance, lineDistance } from './geo.js';
 import { profileNames, getProfile, saveLandmark, WalkLog, exportWalks, walksOf, deleteWalk, transcriptOf } from './profile.js';
 import { showPosition, showRoute as showRouteOnMap } from './debugmap.js';
@@ -260,6 +260,7 @@ function toolHandler(name, args) {
     get_surroundings: () => nav.surroundings({ placesNear: deps.placesNear, areaAt }),
     explore_direction: () => nav.explore(args.direction, { placesNear: p => placesNear(p, 70, SURROUNDING_TYPES, 8), areaAt, routeFrom: deps.routeFrom }),
     get_route_status: () => nav.routeStatus(),
+    get_directions: () => ({ directions: directionsText(nav.route, nav.next), distance_left_m: nav.remaining() }),
     find_place: () => nav.find(args.search_terms || [], deps),
     remember_landmark: () => {
       const r = nav.remember(args, lm => saveLandmark(profile(), lm));
@@ -276,8 +277,8 @@ function toolHandler(name, args) {
         nav.setRoute(fresh);
         showRouteOnMap(fresh.line);
         r.route = phase === 'there'
-          ? { replanned: true, next_turn: nav.turnFacts(nav.turns[0]), distance_m: fresh.distance }
-          : { replanned: true, note: 'Route back updated; still only help when asked.' };
+          ? { replanned: true, note: 'The earlier route list no longer applies. Use only these directions from now on.', directions: directionsText(fresh), distance_m: fresh.distance }
+          : { replanned: true, note: 'Route back updated (for you only; still only help when asked).', directions: directionsText(fresh) };
       }
       return r;
     },
@@ -377,7 +378,11 @@ async function startWalk() {
   showRouteOnMap(route.line);
 
   session = await openSession(outboundInstruction(route.dest, route, route.personal));
-  session.sendFacts('[NAV] The walker is ready at the start. Say hi like a friend picking up the phone, and get them going.', true);
+  // Check where they are before the first direction: a route from the wrong spot is wrong from turn one.
+  const near = start.fixed ? [] : await placesNear(nav.pos, 50, SURROUNDING_TYPES, 3);
+  session.sendFacts(start.fixed
+    ? `[NAV] The walker is ready at ${start.label}, which they confirmed themselves. Say hi like a friend picking up the phone, then give the first step.`
+    : `[NAV] The walker is ready at the start. GPS says they're near ${near.map(p => p.en || `${p.name} [reads "${p.reads}"]`).join(', ') || 'nothing listed'} (±${Math.round(nav.pos.accuracy)} m). Say hi like a friend picking up the phone, then before giving any direction, check casually that they really are near one of those. If not, ask what they see and use find_place and set_my_location before giving directions.`, true);
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
   trackPosition();
 }

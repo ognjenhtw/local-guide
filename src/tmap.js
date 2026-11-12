@@ -15,7 +15,9 @@ const TURNS = {
 };
 
 // A decision point is anywhere the walker must do something other than keep going.
-const isDecision = t => t !== 11 && t !== 200 && t !== 233 && TURNS[t] !== undefined;
+const isDecision = t => t !== 11 && t !== 200 && t !== 201 && t !== 233 && TURNS[t] !== undefined;
+// TMAP names footpaths generically ("pedestrian road"); those aren't street names worth saying.
+const GENERIC_ROADS = ['보행자도로', '보도', '이면도로'];
 
 export async function walkingRoute(from, to) {
   const res = await fetch('https://apis.openapi.sk.com/tmap/routes/pedestrian?version=1', {
@@ -34,16 +36,41 @@ export async function walkingRoute(from, to) {
   const line = data.features
     .filter(f => f.geometry.type === 'LineString')
     .flatMap(f => f.geometry.coordinates);
-  const points = data.features
-    .filter(f => f.geometry.type === 'Point')
-    .map(f => ({
-      lng: f.geometry.coordinates[0],
-      lat: f.geometry.coordinates[1],
-      turnType: f.properties.turnType,
-      action: TURNS[f.properties.turnType] || `type ${f.properties.turnType}`,
-      description: f.properties.description,
-      tmapLandmark: f.properties.nearPoiName || null,
-    }));
+  // Features alternate: a point, then the stretch(es) walked after it until the next point.
+  const points = [];
+  for (const f of data.features) {
+    const p = f.properties;
+    if (f.geometry.type === 'Point') {
+      points.push({
+        lng: f.geometry.coordinates[0],
+        lat: f.geometry.coordinates[1],
+        turnType: p.turnType,
+        action: TURNS[p.turnType] || `type ${p.turnType}`,
+        description: p.description,
+        tmapLandmark: p.nearPoiName || p.name || null,
+        intersection: p.intersectionName || null,
+        segs: [],
+      });
+    } else if (points.length) {
+      // facilityType 15 = crosswalk (TMAP pedestrian route docs).
+      points.at(-1).segs.push({ road: p.name || null, distance: p.distance || 0, crosswalk: p.facilityType === '15' || p.facilityType === 15 });
+    }
+  }
+  // The leg after each decision point: distance, streets and landmarks until the next decision.
+  for (let i = 0; i < points.length; i++) {
+    if (!isDecision(points[i].turnType) && points[i].turnType !== 200) continue;
+    const leg = { distance: 0, roads: [], passes: [], crosswalk: false };
+    for (let j = i; j < points.length; j++) {
+      if (j > i && (isDecision(points[j].turnType) || points[j].turnType === 201)) break;
+      if (j > i && points[j].tmapLandmark) leg.passes.push(points[j].tmapLandmark);
+      for (const s of points[j].segs) {
+        leg.distance += s.distance;
+        if (s.road && !GENERIC_ROADS.includes(s.road) && !leg.roads.includes(s.road)) leg.roads.push(s.road);
+        leg.crosswalk ||= s.crosswalk;
+      }
+    }
+    points[i].leg = leg;
+  }
 
   // The direction the walker is facing as they arrive at each point, so landmarks
   // there can be described as left or right.
@@ -60,6 +87,7 @@ export async function walkingRoute(from, to) {
   return {
     distance: summary.totalDistance,
     time: summary.totalTime,
+    startLeg: points[0]?.leg, // from the start to the first decision
     line: verts, // [{ lat, lng }, ...] along the whole route
     points,
     decisions: points.filter(p => isDecision(p.turnType)),
