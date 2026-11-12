@@ -1,8 +1,10 @@
 // The guide: who it is, what it knows, the tools it can use, and the walk tracker that feeds it.
 import { distance, bearing, side, compass, destinationPoint, lineDistance } from './geo.js';
 
+// Chains by their English name; other places by their Korean name plus how it reads.
 const placeText = p => [
-  p.brand ? `${p.name} (brand: ${p.brand}, ${p.type})` : `${p.name} (${p.type})`,
+  p.en && p.en !== p.name ? `${p.en} [${p.name}] (${p.type})`
+    : p.reads && p.reads !== p.name ? `${p.name} [reads "${p.reads}"] (${p.type})` : `${p.name} (${p.type})`,
   p.street ? `at ${p.street}` : null,
   p.side,
   p.distance != null ? `${Math.round(p.distance)} m away` : null,
@@ -20,7 +22,9 @@ const PERSONA = `You are Local: the walker's friend, late twenties, who has live
 How you talk:
 - Relaxed, warm and playful, with dry humour and a bit of sarcasm, the way friends in their late twenties tease each other. Never childish or cheesy, no puns for their own sake, no exclamation-mark enthusiasm. Not every line needs a joke.
 - Sound like a person on the phone, not an assistant: contractions, the odd "hmm" or "okay so", short sentences. Never say things like "great question", "I'm here to help", "let's stick to the route" or "let's get back on track".
-- English. Usually one to three sentences; longer only when you're chatting and it fits.
+- English. One or two short sentences per reply. Longer only when they're chatting with you and it fits; never for directions.
+- Don't announce what you're about to look up ("let me check", "I'll look that up"). Just look it up and answer.
+- Place names: for chains, say the English name given ("7-Eleven", "Starbucks"). For other places, if the Korean name is an English word written in Korean, say the English (파크닉 = "Parknic", 더블식스버거 = "Double Six Burger"); otherwise say the given reading ("Yangjisikdang"). Never spell out Korean characters.
 - You're there to talk, not only to navigate. React to what they say, have opinions about places, ask something back now and then. If they point something out, get curious about it.
 - Korean place names: use the English brand when there is one (Starbucks, GS25, CU, Olive Young, Paris Baguette). Otherwise say what kind of place it is, or its name the way it reads on the sign.
 - The vibe, as examples only (never repeat them word for word): "Okay, left at the GS25. Yes, another GS25, Seoul has about four per block." / "You walked right past it. It's fine, I'm not judging. Much." / "A record shop? Oh, you're one of those. Respect."
@@ -30,6 +34,7 @@ Be concrete (this matters most):
 - Never be vague. If they ask what's on a side, what's behind them, or what happens if they go another way, look it up with your tools and answer with real places, the street and the neighbourhood, like a friend who knows the area.
 - Only mention places that come from the route, your tools or search results. Never invent places, signs, colours or history, and never claim what a place sells, how good it is or how long it has been there unless a tool or search result told you. If you're not sure, say so the way a friend would ("never been in, but it looks like your kind of place").
 - Their facing direction is estimated. When a tool says it comes from the route rather than their movement, or GPS is worse than 25 m, check with them first ("you should have a GS25 on your left, see it?"). If what they see doesn't match, ask what they see and work it out together.
+- If the walker says you're wrong about where they are or which way to go, never repeat the instruction they rejected, and never just apologise and say it again: that is the worst thing you can do. Your next step is always to find out where they really are (below).
 - GPS can be tens of metres off, especially between tall buildings or indoors. What they see beats your GPS, always. If it doesn't add up, find out where they really are: ask what's around them, call find_place (it lists every match within about 300 m with its street), ask which one they mean if there are several ("the one on the corner, or the one mid-block next to the bakery?"), then call set_my_location with that place. After that, give directions from there.
 
 Safety: tell them where to cross, never when. You can't see traffic lights or cars, so never say it's safe or tell them to go now. While they're on a crosswalk, keep quiet or keep it very short.
@@ -80,7 +85,7 @@ ${outboundTranscript || '(nothing recorded)'}`;
 export const TOOLS = [
   {
     name: 'get_surroundings',
-    description: 'Real places near the walker right now (shops, cafes, stations, banks, their own landmarks), each with its side relative to the direction they face, plus how that direction was estimated and the GPS accuracy.',
+    description: 'Where the walker is right now: street address, building name, and real places near them (shops, cafes, stations, banks, their own landmarks), each with its side relative to the direction they face, plus how that direction was estimated and the GPS accuracy.',
     parameters: { type: 'object', properties: {} },
   },
   {
@@ -157,6 +162,11 @@ export class Navigator {
   update(raw) {
     const now = Date.now();
     this.raw = raw;
+    // The walker picked their real starting point before the walk: line GPS up with it.
+    if (this.startFix && raw.accuracy > 15 && distance(raw, this.startFix) < 500) {
+      this.correction = { dLat: this.startFix.lat - raw.lat, dLng: this.startFix.lng - raw.lng };
+    }
+    this.startFix = null;
     // After the walker told us where they really are, shift GPS by the same offset
     // (poor fixes are often off in one direction) until GPS is good again.
     if (this.correction && raw.accuracy <= 15) this.correction = null;
@@ -235,7 +245,7 @@ export class Navigator {
   facts() {
     const t = this.turns[this.next];
     const where = t
-      ? `Next: ${t.action}${t.landmarks?.[0] ? ` near ${t.landmarks[0].brand || t.landmarks[0].name}` : ''}, ${Math.round(distance(this.pos, t))} m ahead (turn ${this.next + 1} of ${this.turns.length}).`
+      ? `Next: ${t.action}${t.landmarks?.[0] ? ` near ${t.landmarks[0].en || t.landmarks[0].name}${!t.landmarks[0].en && t.landmarks[0].reads ? ` [reads "${t.landmarks[0].reads}"]` : ''}` : ''}, ${Math.round(distance(this.pos, t))} m ahead (turn ${this.next + 1} of ${this.turns.length}).`
       : `Destination ${Math.round(distance(this.pos, this.route.dest))} m ahead.`;
     const gps = this.correction
       ? 'Position set from what the walker told you.'
@@ -247,7 +257,10 @@ export class Navigator {
 
   // The walker confirmed they are next to a place found with find_place: trust that over GPS.
   setLocation(placeName) {
-    const p = this.found.find(f => f.name === placeName) || this.found.find(f => f.name.includes(placeName) || placeName.includes(f.name));
+    // The guide may pass the Korean name, the English one, or either with extra words around it.
+    const q = placeName.toLowerCase();
+    const names = f => [f.name, f.en].filter(Boolean).map(n => n.toLowerCase());
+    const p = this.found.find(f => names(f).includes(q)) || this.found.find(f => names(f).some(n => n.includes(q) || q.includes(n)));
     if (!p) return { error: 'That place is not in the last find_place results. Search again, then use an exact name.' };
     const raw = this.raw || this.pos;
     this.correction = { dLat: p.lat - raw.lat, dLng: p.lng - raw.lng };
@@ -264,10 +277,12 @@ export class Navigator {
     this.next = 0;
   }
 
-  async surroundings({ placesNear }) {
+  async surroundings({ placesNear, areaAt }) {
     const h = this.heading();
-    const places = await placesNear(this.pos);
+    const [places, area] = await Promise.all([placesNear(this.pos), areaAt(this.pos)]);
     return {
+      address: area.address || 'unknown',
+      building: area.building || 'no building name listed',
       facing: `${compass(h.deg)}, estimated from ${h.source}`,
       gps_accuracy_m: Math.round(this.pos.accuracy),
       places: places.map(p => placeText({ ...p, side: side(this.pos, h.deg, p) })),

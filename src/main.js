@@ -167,6 +167,12 @@ async function showRoute(dest) {
   route = await buildRoute(start, dest, getProfile(profile()).landmarks);
   log(`route: ${route.distance} m, ${route.decisions.length} turns, ${route.personal.length} of your landmarks nearby`);
   $('route-summary').textContent = `${route.distance} m · about ${Math.round(route.time / 60)} min · ${route.decisions.length} turns`;
+  // Check the start: a route planned from the wrong spot is wrong from the first turn.
+  const near = await placesNear(start, 40, SURROUNDING_TYPES, 2);
+  $('start-info').textContent = start.fixed
+    ? `Starting at ${start.label} (you picked it)`
+    : `Starting near ${near.map(p => p.name).join(', ') || 'an unnamed spot'} · GPS ±${Math.round(start.accuracy || 0)} m`;
+  $('start-picker').hidden = true;
   for (const turn of route.decisions) {
     const li = document.createElement('li');
     li.className = 'turn';
@@ -180,7 +186,47 @@ async function showRoute(dest) {
   $('start-btn').disabled = false;
 }
 
+// "That's not where I am": pick the real starting point from places nearby, or search for one.
+function listStartOptions(places) {
+  const ul = $('start-options');
+  ul.innerHTML = places.length ? '' : '<li>Nothing found. Try another name.</li>';
+  for (const p of places) {
+    const li = document.createElement('li');
+    li.innerHTML = `${p.name}<br><small>${p.type}${p.street ? ' · ' + p.street : ''} · ${Math.round(p.distance)} m from GPS</small>`;
+    li.onclick = () => {
+      start = { lat: p.lat, lng: p.lng, accuracy: 10, label: p.name, fixed: true };
+      log('start set to', p.name);
+      showRoute(route.dest).catch(err => log('ERROR', err.message));
+    };
+    ul.appendChild(li);
+  }
+}
+
+$('fix-start-btn').onclick = async () => {
+  $('start-picker').hidden = false;
+  $('start-options').innerHTML = '<li>Looking around…</li>';
+  listStartOptions(await placesNear(start, 300, SURROUNDING_TYPES, 15));
+};
+$('start-form').onsubmit = async e => {
+  e.preventDefault();
+  const q = $('start-search').value.trim();
+  if (q) listStartOptions(await findNear(start, [q], 800, 10));
+};
+
 // --- Walking ---------------------------------------------------------------------------
+
+// Phrases that mean "you have my position or direction wrong". The code catches them itself
+// so the guide is told to re-locate instead of repeating itself.
+const CORRECTION = /\b(gps|wrong (way|direction)|opposite (way|direction)|not where i am|i('| a)?m (in front of|next to|right by|right next to|standing (at|by|next to))|where are you taking me|do you (even )?know where i am|you('| a)?re wrong|that'?s wrong)\b/i;
+let lastNudge = 0, walkerLine = '';
+
+function checkForCorrection(text) {
+  walkerLine += text;
+  if (!CORRECTION.test(walkerLine) || Date.now() - lastNudge < 20000) return;
+  lastNudge = Date.now();
+  walkLog?.add('nudge', { text: walkerLine });
+  session?.sendFacts("[NAV] The walker is telling you their position or direction is wrong. Do not repeat your last instruction. Call find_place for the places they just named, ask which one if there are several, then call set_my_location, and only then give directions.", false);
+}
 
 let session, nav, walkLog, watchId, factTimer, chatTimer, wakeLock, phase;
 let transcript = []; // [{ who, text }] for the way-back summary
@@ -199,6 +245,7 @@ function addLine(who, text) {
   }
   const t = transcript.at(-1);
   if (t && t.who === who) t.text += text; else transcript.push({ who, text });
+  if (who === 'walker') checkForCorrection(text); else walkerLine = '';
   walkLog?.add('say', { who, text });
 }
 
@@ -210,7 +257,7 @@ function toolHandler(name, args) {
     routeFrom: pos => walkingRoute(pos, nav.route.dest),
   };
   const run = {
-    get_surroundings: () => nav.surroundings({ placesNear: deps.placesNear }),
+    get_surroundings: () => nav.surroundings({ placesNear: deps.placesNear, areaAt }),
     explore_direction: () => nav.explore(args.direction, { placesNear: p => placesNear(p, 70, SURROUNDING_TYPES, 8), areaAt, routeFrom: deps.routeFrom }),
     get_route_status: () => nav.routeStatus(),
     find_place: () => nav.find(args.search_terms || [], deps),
@@ -325,6 +372,7 @@ async function startWalk() {
   walkLog = new WalkLog({ profile: profile(), provider: settings.provider(), model: settings.model(), voice: settings.voice(), start, dest: route.dest });
   nav = new Navigator(route, route.personal.slice());
   nav.update({ ...start, accuracy: start.accuracy || 30 }); // until the first GPS fix arrives
+  if (start.fixed) nav.startFix = start; // the walker picked their real start: line GPS up with it
   showPosition(nav.pos);
   showRouteOnMap(route.line);
 

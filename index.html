@@ -29,6 +29,15 @@
       <section id="route-section" hidden>
         <h2 id="route-title"></h2>
         <p id="route-summary" class="muted"></p>
+        <p id="start-info" class="muted"></p>
+        <button id="fix-start-btn" type="button" class="secondary">That's not where I am</button>
+        <div id="start-picker" hidden>
+          <form id="start-form">
+            <input id="start-search" type="search" placeholder="What are you next to? e.g. 7-Eleven" autocomplete="off" />
+            <button type="submit">Find</button>
+          </form>
+          <ul id="start-options"></ul>
+        </div>
         <button id="start-btn" type="button">Start walking</button>
         <ol id="turns"></ol>
       </section>

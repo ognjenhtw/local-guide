@@ -29,7 +29,9 @@ button.secondary { background: transparent; color: var(--accent); border: 1px so
 .buttons button { flex: 1; }
 #start-btn { width: 100%; margin: 8px 0 12px; }
 ul, ol { padding-left: 0; list-style: none; }
-#results li { padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+#results li, #start-options li { padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+#start-options small { color: var(--muted); }
+#start-picker { margin: 8px 0; }
 #results small { color: var(--muted); }
 .turn { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .turn b { display: block; }

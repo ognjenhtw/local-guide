@@ -1,5 +1,7 @@
 // Kakao Maps JavaScript SDK: destination search and nearby places.
 // The JavaScript key only works from domains registered in Kakao Developers.
+import { englishName, romanize } from './names.js';
+
 const KEY = import.meta.env.VITE_KAKAO_JS_KEY;
 
 let places;
@@ -55,9 +57,12 @@ export const SURROUNDING_TYPES = ['CS2', 'CE7', 'FD6', 'PM9', 'BK9', 'SW8', 'MT1
 function normalise(p) {
   // Chains carry their brand as the last part of the category, e.g. "… > 편의점 > GS25".
   const last = p.category_name?.split('>').pop().trim();
+  const brand = last && p.place_name.startsWith(last) ? last : undefined;
   return {
     name: p.place_name,
-    brand: last && p.place_name.startsWith(last) ? last : undefined,
+    en: englishName(p.place_name, brand),
+    reads: romanize(p.place_name),
+    brand,
     type: TYPES[p.category_group_code] || p.category_name?.split('>').pop().trim(),
     lat: Number(p.y),
     lng: Number(p.x),
@@ -90,6 +95,8 @@ export async function areaAt({ lat, lng }) {
       if (status !== window.kakao.maps.services.Status.OK || !res[0]) return resolve({});
       const r = res[0];
       resolve({
+        address: r.road_address?.address_name || r.address?.address_name,
+        building: r.road_address?.building_name || undefined,
         street: r.road_address?.road_name,
         area: r.address?.region_3depth_name,
         district: r.address?.region_2depth_name,
