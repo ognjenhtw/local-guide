@@ -64,7 +64,11 @@ export async function walkingRoute(from, to, via = []) {
     if (!isDecision(points[i].turnType) && points[i].turnType !== 200) continue;
     const leg = { distance: 0, roads: [], passes: [], crosswalk: false };
     for (let j = i; j < points.length; j++) {
-      if (j > i && (isDecision(points[j].turnType) || points[j].turnType === 201)) break;
+      if (j > i && (isDecision(points[j].turnType) || points[j].turnType === 201)) {
+        // The road the stretch ends on ("…all the way down to Jongno").
+        leg.reaches = points[j].segs.find(s => s.road && !GENERIC_ROADS.includes(s.road))?.road || null;
+        break;
+      }
       if (j > i && points[j].tmapLandmark) leg.passes.push(points[j].tmapLandmark);
       for (const s of points[j].segs) {
         leg.distance += s.distance;

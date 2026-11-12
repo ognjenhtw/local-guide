@@ -39,6 +39,14 @@ function pickShops(shops = [], likes = []) {
   return shops.slice().sort((a, b) => score(a) - score(b) || a.s - b.s).slice(0, 4).sort((a, b) => a.s - b.s);
 }
 
+// Big roads people know by name, even visitors: worth saying where a stretch ends.
+const BIG_ROADS = {
+  '종로': 'Jongno, the big main road', '을지로': 'Eulji-ro, the big road', '퇴계로': 'Toegye-ro, the big road',
+  '율곡로': 'Yulgok-ro, the big road', '세종대로': 'Sejong-daero', '청계천로': 'the Cheonggyecheon stream',
+  '대학로': 'Daehak-ro', '양화로': 'Yanghwa-ro, the big road', '와우산로': 'Wausan-ro', '홍익로': 'Hongik-ro',
+  '테헤란로': 'Teheran-ro', '강남대로': 'Gangnam-daero', '한강대로': 'Hangang-daero', '이태원로': 'Itaewon-ro',
+};
+
 // Office and apartment buildings rarely have a sign walkers notice.
 const isBuilding = s => /빌딩|타워|아파트|오피스텔|빌라|맨션|하우스|센터|프라자|플라자|오피스/.test(s);
 
@@ -77,7 +85,8 @@ export function stepText(t, likes = [], prevShops = [], atStart = false) {
   const leg = t.leg;
   const passes = pickShops(leg?.shops, likes)
     .map(p => `${spoken(p)} on your ${p.side}${p.after_m > 20 ? ` after about ${Math.round(p.after_m / 10) * 10} m` : ''}`).join(', ');
-  const then = leg && leg.distance ? `; then walk about ${Math.round(leg.distance / 10) * 10} m${passes ? `, passing ${passes}` : ''}` : '';
+  const reaches = leg?.reaches && BIG_ROADS[leg.reaches] ? `, all the way to ${BIG_ROADS[leg.reaches]}` : '';
+  const then = leg && leg.distance ? `; then walk about ${Math.round(leg.distance / 10) * 10} m${reaches}${passes ? `, passing ${passes}` : ''}` : '';
   const text = `${doIt}${then}.`;
   return text[0].toUpperCase() + text.slice(1);
 }
@@ -105,7 +114,7 @@ function stepData(t, i) {
   return [
     `Step ${i + 1}: ${ACTIONS[t.action] || t.action}${i === 0 && t.action.startsWith('crosswalk') ? ' (if they are already standing at this crosswalk, it is simply the crosswalk right by them)' : ''}.`,
     `  At the turn: ${[...(t.personal || []).map(mineText), ...(t.landmarks || []).map(placeData)].join('; ') || 'nothing listed'}${t.tmapLandmark && !isBuilding(t.tmapLandmark) ? `; map label: ${t.tmapLandmark}` : ''}.`,
-    leg.distance ? `  Then about ${Math.round(leg.distance)} m${leg.crosswalk ? ' (crossing a street on the way)' : ''}${leg.roads?.length ? ` along ${leg.roads.join(', ')} (street name: only if asked)` : ''}, passing in order:` : null,
+    leg.distance ? `  Then about ${Math.round(leg.distance)} m${leg.crosswalk ? ' (crossing a street on the way)' : ''}${leg.roads?.length ? ` along ${leg.roads.join(', ')} (street name: only if asked)` : ''}${leg.reaches ? `, ending at ${leg.reaches}${BIG_ROADS[leg.reaches] ? ` (${BIG_ROADS[leg.reaches]})` : ''}` : ''}, passing in order:` : null,
     ...(leg.shops || []).map(p => `   - ${placeData(p)}`),
   ].filter(Boolean).join('\n');
 }

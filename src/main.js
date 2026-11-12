@@ -357,13 +357,12 @@ function toolHandler(name, args) {
       if (!p) return { error: 'No such match. Call find_place first, then use the number of the match they confirmed.' };
       const r = nav.setLocation(p);
       showPosition(nav.pos);
-      // Far from the planned route: plan again from where they really are.
-      if (nav.offRoute() > 40) {
-        const fresh = await buildRoute(nav.pos, nav.route.dest, getProfile(profile()).landmarks);
-        nav.setRoute(fresh);
-        showRouteOnMap(fresh.line);
-        r.route_replanned = true;
-      }
+      // Always plan again from where they really are: even a few metres off, the first step of
+      // a route planned from the wrong spot ("turn right by the restaurant") makes no sense.
+      const fresh = await buildRoute(nav.pos, nav.route.dest, getProfile(profile()).landmarks);
+      nav.setRoute(fresh);
+      showRouteOnMap(fresh.line);
+      r.route_replanned = true;
       r.first_step = phase === 'there' ? nav.nextStepText() : '(way back: still only help when asked)';
       r.note = 'Say the first step from here in your own voice. For anything after that, use ask_navigator.';
       return r;
