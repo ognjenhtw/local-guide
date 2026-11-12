@@ -2,7 +2,8 @@ import { log } from './log.js';
 import { loadKakao, searchPlaces, placesNear, findNear, areaAt, LANDMARK_TYPES, SURROUNDING_TYPES } from './kakao.js';
 import { walkingRoute } from './tmap.js';
 import { PROVIDERS, createSession } from './providers/index.js';
-import { outboundInstruction, returnInstruction, Navigator, TOOLS, directionsText } from './guide.js';
+import { outboundInstruction, returnInstruction, Navigator, TOOLS, directionsText, brainRouteData, BRAIN_RULES, BRAIN_RULES_BACK } from './guide.js';
+import { BRAINS, askBrain } from './brain.js';
 import { side, distance, lineDistance, project, pointsAlong } from './geo.js';
 import { profileNames, getProfile, saveLandmark, saveInterest, WalkLog, exportWalks, walksOf, deleteWalk, transcriptOf } from './profile.js';
 import { showPosition, showRoute as showRouteOnMap } from './debugmap.js';
@@ -46,6 +47,16 @@ function setupSettings() {
   $('key-openai').value = store.get('openaiKey', import.meta.env.VITE_OPENAI_API_KEY || '');
   $('key-gemini').onchange = () => store.set('geminiKey', $('key-gemini').value.trim());
   $('key-openai').onchange = () => store.set('openaiKey', $('key-openai').value.trim());
+  // The brain: which text AI answers navigation questions.
+  $('brain').innerHTML = Object.entries(BRAINS).map(([id, b]) => `<option value="${id}">${b.label}</option>`).join('');
+  // Claude when its key is there (fast and reliable), otherwise Gemini's free tier.
+  $('brain').value = store.get('brain', store.get('claudeKey') || import.meta.env.VITE_ANTHROPIC_API_KEY ? 'claude' : 'gemini');
+  const refreshBrain = () => fillOptions($('brain-model'), BRAINS[$('brain').value].models, store.get(`brainModel.${$('brain').value}`));
+  refreshBrain();
+  $('brain').onchange = () => { store.set('brain', $('brain').value); refreshBrain(); };
+  $('brain-model').onchange = () => store.set(`brainModel.${$('brain').value}`, $('brain-model').value);
+  $('key-claude').value = store.get('claudeKey', import.meta.env.VITE_ANTHROPIC_API_KEY || '');
+  $('key-claude').onchange = () => store.set('claudeKey', $('key-claude').value.trim());
   $('search').checked = store.get('search') === '1';
   $('search').onchange = () => store.set('search', $('search').checked ? '1' : '');
   $('export-btn').onclick = exportWalks;
@@ -257,7 +268,7 @@ function checkForCorrection(text) {
   if (!CORRECTION.test(walkerLine) || Date.now() - lastNudge < 20000) return;
   lastNudge = Date.now();
   walkLog?.add('nudge', { text: walkerLine });
-  session?.sendFacts("[NAV] The walker is pushing back on your directions. Do not repeat your last instruction or its wording. Work out what they mean: if they told you where they are, call find_place and set_my_location; if they want to go a way they know, call route_via; then give the next step in new words, describing it from where they stand right now.", false);
+  session?.sendFacts("[NAV] The walker is pushing back. Do not repeat your last instruction. If they told you where they are, call find_place and then set_my_location; if they want to go a way they know, call find_place and then route_via; otherwise pass their exact question to ask_navigator and say its answer.", false);
 }
 
 let session, nav, walkLog, watchId, factTimer, chatTimer, wakeLock, phase;
@@ -281,18 +292,60 @@ function addLine(who, text) {
   walkLog?.add('say', { who, text });
 }
 
+// --- The navigator brain -------------------------------------------------------------------
+
+const DIRECTION_WORDS = [[/\bleft\b/i, 'left'], [/\bright\b(?! (now|here|there|away))/i, 'right'], [/\b(behind|back|other way|opposite)\b/i, 'behind'], [/\b(ahead|straight|forward)\b/i, 'ahead']];
+
+// A question for the brain, with everything it needs: the whole route, where the walker is,
+// what's around them, what's in a direction they asked about, and the recent conversation.
+async function askNavigator(question) {
+  const deps = { placesNear: pos => placesNear(pos, 60, SURROUNDING_TYPES, 12), areaAt, routeFrom: pos => walkingRoute(pos, nav.route.dest) };
+  const dir = DIRECTION_WORDS.find(([re]) => re.test(question))?.[1];
+  const [around, that] = await Promise.all([
+    nav.surroundings(deps).catch(() => ''),
+    dir && /what|where|if|happen|over there|side/i.test(question)
+      ? nav.explore(dir, { ...deps, placesNear: p => placesNear(p, 70, SURROUNDING_TYPES, 8) }).catch(() => '')
+      : '',
+  ]);
+  const step = nav.next;
+  if (phase === 'back') nav.helpAsks[step] = (nav.helpAsks[step] || 0) + 1;
+  const recent = transcript.filter(t => t.who !== 'note').slice(-12)
+    .map(t => `${t.who === 'guide' ? 'Local' : 'Walker'}: ${t.text.trim()}`).join('\n');
+  const prompt = [
+    'THE ROUTE', brainRouteData(nav.route),
+    '\nWHERE THE WALKER IS', nav.brainState(), around, that,
+    phase === 'back' ? `\nThis is help request number ${nav.helpAsks[step]} at this spot.` : '',
+    '\nTHE CONVERSATION SO FAR', recent || '(just started)',
+    `\nTHE WALKER ASKS: "${question}"`,
+  ].filter(Boolean).join('\n');
+  const brain = $('brain').value;
+  const t0 = Date.now();
+  try {
+    const answer = await askBrain({
+      provider: brain,
+      model: $('brain-model').value,
+      apiKey: brain === 'claude' ? $('key-claude').value.trim() : $('key-gemini').value.trim(),
+      system: phase === 'back' ? BRAIN_RULES_BACK : BRAIN_RULES,
+      prompt,
+    });
+    log(`navigator answered in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+    return { answer, note: 'Say this in your own voice, keeping every fact.' };
+  } catch (err) {
+    // Too slow or failed: never leave the walker hanging. Fall back to the next step from the route data.
+    log('navigator failed:', err.message);
+    walkLog.add('brain_failed', { error: err.message, ms: Date.now() - t0 });
+    return phase === 'back'
+      ? { answer: 'Ask them what they see around them right now, or what they remember about this bit.', note: 'The navigator was too slow; this is a fallback.' }
+      : { answer: nav.nextStepText(), note: 'The navigator was too slow; this is the next step from the route data. Say it, and offer to go through the rest.' };
+  }
+}
+
 function toolHandler(name, args) {
   const deps = {
-    placesNear: pos => placesNear(pos, 60, SURROUNDING_TYPES, 12),
     findNear: (pos, terms) => findNear(pos, terms, 300, 8), // wide, so different branches of a chain can be told apart
-    areaAt,
-    routeFrom: pos => walkingRoute(pos, nav.route.dest),
   };
   const run = {
-    get_surroundings: () => nav.surroundings({ placesNear: deps.placesNear, areaAt }),
-    explore_direction: () => nav.explore(args.direction, { placesNear: p => placesNear(p, 70, SURROUNDING_TYPES, 8), areaAt, routeFrom: deps.routeFrom }),
-    get_route_status: () => nav.routeStatus(),
-    get_directions: () => ({ directions: directionsText(nav.route, nav.next), distance_left_m: nav.remaining() }),
+    ask_navigator: () => askNavigator(args.question || ''),
     find_place: () => nav.find(args.search_terms || [], deps),
     remember_landmark: () => {
       const r = nav.remember(args, lm => saveLandmark(profile(), lm));
@@ -300,18 +353,19 @@ function toolHandler(name, args) {
       return r;
     },
     set_my_location: async () => {
-      const r = nav.setLocation(args.place_name);
-      if (r.error) return r;
+      const p = nav.match(args.match_number, args.place_name);
+      if (!p) return { error: 'No such match. Call find_place first, then use the number of the match they confirmed.' };
+      const r = nav.setLocation(p);
       showPosition(nav.pos);
       // Far from the planned route: plan again from where they really are.
       if (nav.offRoute() > 40) {
         const fresh = await buildRoute(nav.pos, nav.route.dest, getProfile(profile()).landmarks);
         nav.setRoute(fresh);
         showRouteOnMap(fresh.line);
-        r.route = phase === 'there'
-          ? { replanned: true, note: 'The earlier route list no longer applies. Use only these directions from now on.', directions: directionsText(fresh), distance_m: fresh.distance }
-          : { replanned: true, note: 'Route back updated (for you only; still only help when asked).', directions: directionsText(fresh) };
+        r.route_replanned = true;
       }
+      r.first_step = phase === 'there' ? nav.nextStepText() : '(way back: still only help when asked)';
+      r.note = 'Say the first step from here in your own voice. For anything after that, use ask_navigator.';
       return r;
     },
     note_interest: () => {
@@ -320,11 +374,11 @@ function toolHandler(name, args) {
       return { saved: true, their_interests: likes, note: 'Directions now list matching places first.' };
     },
     route_via: async () => {
-      const via = nav.foundPlace(args.place_name);
-      if (!via) return { error: 'That place is not in the last find_place results. Search for it first, then use an exact name.' };
+      const via = nav.match(args.match_number, args.place_name);
+      if (!via) return { error: 'No such match. Call find_place for the spot they mean first, then use its number.' };
       // Going "via" the shop they're standing next to changes nothing; they almost surely meant another one.
       if (distance(nav.pos, via) < 40) {
-        return { error: `${via.en || via.name} is right next to them (${Math.round(distance(nav.pos, via))} m), so it can't be the place further along they mean. Check the other matches from find_place (which side, how far) and pick the one that fits what they described.` };
+        return { error: `That one is right next to them (${Math.round(distance(nav.pos, via))} m), so it can't be the place further along they mean. Look at the other matches (side, distance) and pick the one that fits what they described.` };
       }
       const before = nav.remaining();
       const theirs = await buildRoute(nav.pos, nav.route.dest, getProfile(profile()).landmarks, [via]);
@@ -333,8 +387,8 @@ function toolHandler(name, args) {
       return {
         their_way_m: theirs.distance,
         previous_route_m: before,
-        note: 'This is the route now; the earlier directions no longer apply.',
-        directions: phase === 'there' ? directionsText(theirs) : '(way back: for you only; still only help when asked)',
+        first_step: phase === 'there' ? nav.nextStepText() : '(way back: still only help when asked)',
+        note: 'Their way is the route now. Say how it compares and the first step; for anything after that, use ask_navigator.',
       };
     },
     start_way_back: () => {
@@ -397,7 +451,7 @@ function trackPosition() {
     const turn = nav.turns[nav.next];
     if (turn && distance(nav.pos, turn) < 40 && announced !== nav.next) {
       announced = nav.next;
-      session.sendFacts(`${facts} The turn is coming up: tell them, with its landmark and side.`, true);
+      session.sendFacts(`[NAV] The next step is coming up. Say it now in your own voice, keeping every fact: ${nav.nextStepText()}`, true);
     }
     const still = nav.stillFor();
     if (still >= 15 && !nudged) { nudged = true; session.sendFacts(`${facts} The walker has stopped.`, true); }
@@ -434,10 +488,9 @@ async function startWalk() {
 
   session = await openSession(outboundInstruction(route.dest, route, route.personal));
   // Check where they are before the first direction: a route from the wrong spot is wrong from turn one.
-  const near = start.fixed ? [] : await placesNear(nav.pos, 50, SURROUNDING_TYPES, 3);
   session.sendFacts(start.fixed
-    ? `[NAV] The walker is ready at ${start.label}, which they confirmed themselves. Say hi like a friend picking up the phone, then give the first step.`
-    : `[NAV] The walker is ready at the start. GPS says they're near ${near.map(p => p.en || `${p.name} [reads "${p.reads}"]`).join(', ') || 'nothing listed'} (±${Math.round(nav.pos.accuracy)} m). Say hi like a friend picking up the phone, then before giving any direction, check casually that they really are near one of those. If not, ask what they see and use find_place and set_my_location before giving directions.`, true);
+    ? `[NAV] The walker is ready at the start, which they confirmed themselves. Say hi like a friend picking up the phone, then give the first step: ${nav.nextStepText()}`
+    : '[NAV] The walker is ready at the start, but GPS may be off. Say hi like a friend picking up the phone, then ask what they see around them right now (a shop or two) and wait. When they answer, if it fits the start, give the first step via ask_navigator; if it does not, use find_place and set_my_location first.', true);
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
   trackPosition();
 }

@@ -64,6 +64,9 @@ function normalise(p) {
     reads: romanize(p.place_name),
     brand,
     type: TYPES[p.category_group_code] || p.category_name?.split('>').pop().trim(),
+    // The most specific category in Korean, e.g. "호두과자" (walnut cakes) or "삼계탕":
+    // the brain translates it so the walker hears what the place is.
+    kind: last,
     lat: Number(p.y),
     lng: Number(p.x),
     distance: Number(p.distance),
