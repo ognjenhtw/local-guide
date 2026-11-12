@@ -20,16 +20,18 @@ export function turnSummary(t, i) {
 
 // Korean names as the walker would hear them said: "다산로" -> "Dasanro".
 const say = s => (s ? romanize(s) : s);
+// Office and apartment buildings rarely have a sign walkers notice.
+const isBuilding = s => /빌딩|타워|아파트|오피스텔|빌라|맨션|하우스|센터|프라자|플라자|오피스/.test(s);
 // A name from TMAP: English for chains ("Hana Bank (Seogyodong branch)"), otherwise Korean plus its reading.
 const tmapName = s => englishName(s) || `${s} [reads "${say(s)}"]`;
 
 const ACTIONS = {
   left: 'turn left', right: 'turn right', straight: 'keep going straight', 'U-turn': 'turn around',
   'sharp left': 'take the sharp left', 'slight left': 'bear left', 'slight right': 'bear right', 'sharp right': 'take the sharp right',
-  crosswalk: 'cross at the crosswalk', 'crosswalk, then left': 'cross at the crosswalk, then turn left',
-  'crosswalk, then right': 'cross at the crosswalk, then turn right',
-  "crosswalk (2 o'clock)": 'cross at the crosswalk, heading slightly right', "crosswalk (10 o'clock)": 'cross at the crosswalk, heading slightly left',
-  "crosswalk (4 o'clock)": 'cross at the crosswalk, then go sharp right', "crosswalk (8 o'clock)": 'cross at the crosswalk, then go sharp left',
+  crosswalk: 'cross the street at the crosswalk', 'crosswalk, then left': 'cross the street at the crosswalk, and on the other side turn left',
+  'crosswalk, then right': 'cross the street at the crosswalk, and on the other side turn right',
+  "crosswalk (2 o'clock)": 'cross the street at the crosswalk, and on the other side bear right', "crosswalk (10 o'clock)": 'cross the street at the crosswalk, and on the other side bear left',
+  "crosswalk (4 o'clock)": 'cross the street at the crosswalk, and on the other side turn sharp right', "crosswalk (8 o'clock)": 'cross the street at the crosswalk, and on the other side turn sharp left',
   stairs: 'take the stairs',
   overpass: 'take the footbridge', underpass: 'take the underpass', arrive: 'you arrive',
 };
@@ -39,15 +41,23 @@ const ACTIONS = {
 export function stepText(t) {
   const mine = t.personal?.[0];
   const mark = t.landmarks?.[0];
-  const where = mine ? `at their own landmark "${mine.label}"${mine.side ? ` (${mine.side})` : ''}`
-    : mark ? `at ${mark.en || `${mark.name} [reads "${mark.reads}"]`}${mark.side ? `, ${mark.side}` : ''}`
-      : t.tmapLandmark ? `at ${tmapName(t.tmapLandmark)}`
-        : t.intersection ? `at the ${say(t.intersection)} junction` : '';
+  const place = mine ? `their own landmark "${mine.label}"${mine.side ? ` (${mine.side})` : ''}`
+    : mark ? `${mark.en || `${mark.name} [reads "${mark.reads}"]`}${mark.side ? `, ${mark.side}` : ''}`
+      : t.tmapLandmark && !isBuilding(t.tmapLandmark) ? tmapName(t.tmapLandmark)
+        : t.intersection ? `the ${say(t.intersection)} junction` : '';
+  const action = ACTIONS[t.action] || t.action;
+  // A crosswalk starts at the landmark and the turn happens on the far side, so say it in that order.
+  const [first, rest] = action.split(', and ');
+  const doIt = place
+    ? (t.action.startsWith('crosswalk') ? `${first} by ${place}${rest ? `, and ${rest}` : ''}` : `${action} at ${place}`)
+    : action;
   const leg = t.leg;
+  // Shops people can see first; street and building names only as a footnote (walkers rarely know them).
+  const passes = leg?.passes.filter(p => !isBuilding(p)).slice(0, 2) || [];
   const then = leg && leg.distance
-    ? `; then walk about ${Math.round(leg.distance / 10) * 10} m${leg.roads.length ? ` along ${leg.roads.map(say).join(' and ')}` : ''}${leg.passes.length ? `, passing ${leg.passes.slice(0, 2).map(tmapName).join(' and ')}` : ''}`
+    ? `; then walk about ${Math.round(leg.distance / 10) * 10} m${passes.length ? `, passing ${passes.map(tmapName).join(' and ')}` : ''}${leg.roads.length ? ` (street: ${leg.roads.map(say).join(', ')}; only mention if asked)` : ''}`
     : '';
-  const text = `${ACTIONS[t.action] || t.action}${where ? ' ' + where : ''}${then}.`;
+  const text = `${doIt}${then}.`;
   return text[0].toUpperCase() + text.slice(1);
 }
 
@@ -96,6 +106,7 @@ Tools:
 - explore_direction: what's that way (ahead, left, right, behind): places, street, neighbourhood, and how much longer the walk gets. Use it for "what if I go the other way" and "what's over there".
 - get_route_status: next turn, its landmarks, distance, whether they're off the route.
 - get_directions: the full remaining route as numbered steps with landmarks, streets and distances.
+- route_via: re-plan the route through a place they want to go by.
 - find_place: search near them for something they named.
 - set_my_location: when GPS is off and they've told you where they really are, set their position to that place (a name from find_place). The route is re-planned from there.
 - remember_landmark: save a landmark to the walker's personal map.
@@ -112,7 +123,11 @@ Right now you lead. You're walking them to ${dest.name}: about ${route.distance}
 ${route.decisions.map(turnSummary).join('\n')}
 
 Giving directions:
-- Say the next step with its landmark, side and street, the way it's written in the route. Don't work out turns yourself and never invent one.
+- Say the next step with its landmark and side, the way it's written in the route. Don't work out turns yourself and never invent one.
+- Describe it from where they stand right now, with things they can see: "the crosswalk right in front of you", "the 7-Eleven on your right". Don't name the place they're already standing at as where to turn.
+- Street and building names: only if they ask. Most people don't know them and can't see them.
+- Never ask them for a branch name or an address. Tell shops apart by where they are: which side, which corner, how far.
+- If they want to go a way they know ("straight to the 7-Eleven on the corner, then right"), don't argue: find_place the spot they mean, call route_via, and if it works, go their way and say how it compares ("sure, that's only a minute longer").
 - When they ask where you're taking them, what comes after, or how to get there, call get_directions and walk them through the next two or three steps with landmarks and streets.
 - If your position gets corrected (set_my_location), the route is re-planned and the earlier list no longer applies: use only the new directions you get back.
 ${personal.length ? `\nTheir own landmarks near this route: ${personal.map(mineText).join('; ')}.` : ''}
@@ -196,6 +211,15 @@ export const TOOLS = [
   {
     name: 'set_my_location',
     description: "Correct the walker's position when GPS is wrong: put them at a place they confirmed they are next to. Use an exact name returned by find_place. The route is re-planned from there.",
+    parameters: {
+      type: 'object',
+      properties: { place_name: { type: 'string', description: 'Exact place name from find_place.' } },
+      required: ['place_name'],
+    },
+  },
+  {
+    name: 'route_via',
+    description: "Plan the route through a place the walker wants to go by (their own way), e.g. the 7-Eleven on the corner. Use an exact name from find_place. Returns how long their way is compared with the current route, and the new directions, which then become the route.",
     parameters: {
       type: 'object',
       properties: { place_name: { type: 'string', description: 'Exact place name from find_place.' } },
@@ -319,12 +343,17 @@ export class Navigator {
     return `[NAV] ${where} Off route: ${this.offRoute()} m. Standing still: ${this.stillFor()} s. ${gps}`;
   }
 
-  // The walker confirmed they are next to a place found with find_place: trust that over GPS.
-  setLocation(placeName) {
-    // The guide may pass the Korean name, the English one, or either with extra words around it.
+  // A place from the last find_place results. The guide may pass the Korean name, the
+  // English one, or either with extra words around it.
+  foundPlace(placeName = '') {
     const q = placeName.toLowerCase();
     const names = f => [f.name, f.en].filter(Boolean).map(n => n.toLowerCase());
-    const p = this.found.find(f => names(f).includes(q)) || this.found.find(f => names(f).some(n => n.includes(q) || q.includes(n)));
+    return this.found.find(f => names(f).includes(q)) || this.found.find(f => names(f).some(n => n.includes(q) || q.includes(n)));
+  }
+
+  // The walker confirmed they are next to a place found with find_place: trust that over GPS.
+  setLocation(placeName) {
+    const p = this.foundPlace(placeName);
     if (!p) return { error: 'That place is not in the last find_place results. Search again, then use an exact name.' };
     const raw = this.raw || this.pos;
     this.correction = { dLat: p.lat - raw.lat, dLng: p.lng - raw.lng };

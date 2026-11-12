@@ -19,7 +19,8 @@ const isDecision = t => t !== 11 && t !== 200 && t !== 201 && t !== 233 && TURNS
 // TMAP names footpaths generically ("pedestrian road"); those aren't street names worth saying.
 const GENERIC_ROADS = ['보행자도로', '보도', '이면도로'];
 
-export async function walkingRoute(from, to) {
+// `via`: up to 5 places the route must pass through, e.g. the walker's own way.
+export async function walkingRoute(from, to, via = []) {
   const res = await fetch('https://apis.openapi.sk.com/tmap/routes/pedestrian?version=1', {
     method: 'POST',
     headers: { appKey: KEY, 'Content-Type': 'application/json' },
@@ -27,6 +28,7 @@ export async function walkingRoute(from, to) {
       startX: from.lng, startY: from.lat, endX: to.lng, endY: to.lat,
       startName: 'start', endName: 'destination',
       reqCoordType: 'WGS84GEO', resCoordType: 'WGS84GEO',
+      ...(via.length ? { passList: via.slice(0, 5).map(v => `${v.lng},${v.lat}`).join('_') } : {}),
     }),
   });
   if (!res.ok) throw new Error(`TMAP ${res.status}: ${await res.text()}`);

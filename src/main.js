@@ -137,8 +137,8 @@ async function onSearch(e) {
 
 // A walking route with landmarks at each turn: up to three Kakao places, described from
 // where the walker arrives, plus any of the walker's own landmarks close by.
-async function buildRoute(from, to, personal) {
-  const route = await walkingRoute(from, to);
+async function buildRoute(from, to, personal, via = []) {
+  const route = await walkingRoute(from, to, via);
   route.dest = to;
   route.personal = personal.filter(m => lineDistance(m, route.line) < 50);
   await Promise.all(route.decisions.map(async turn => {
@@ -217,7 +217,13 @@ $('start-form').onsubmit = async e => {
 
 // Phrases that mean "you have my position or direction wrong". The code catches them itself
 // so the guide is told to re-locate instead of repeating itself.
-const CORRECTION = /\b(gps|wrong (way|direction)|opposite (way|direction)|not where i am|i('| a)?m (in front of|next to|right by|right next to|standing (at|by|next to))|where are you taking me|do you (even )?know where i am|you('| a)?re wrong|that'?s wrong)\b/i;
+const CORRECTION = new RegExp([
+  String.raw`\bgps\b`, 'wrong (way|direction)', 'opposite (way|direction)', 'not where i am',
+  // "I'm in front of", "I'm right in front of", "I'm actually at", "I am standing next to"…
+  String.raw`\bi('| a)?m\s+(right\s+|just\s+|actually\s+|already\s+|standing\s+|now\s+)*(in front of|next to|by|at|outside|near|beside)\b`,
+  'where are you taking me', 'do you (even |really )?(know|understand|hear)', String.raw`you('| a)?re wrong`, String.raw`that'?s wrong`,
+  'same page', 'are you (dumb|listening)', 'listen to me',
+].join('|'), 'i');
 let lastNudge = 0, walkerLine = '';
 
 function checkForCorrection(text) {
@@ -225,7 +231,7 @@ function checkForCorrection(text) {
   if (!CORRECTION.test(walkerLine) || Date.now() - lastNudge < 20000) return;
   lastNudge = Date.now();
   walkLog?.add('nudge', { text: walkerLine });
-  session?.sendFacts("[NAV] The walker is telling you their position or direction is wrong. Do not repeat your last instruction. Call find_place for the places they just named, ask which one if there are several, then call set_my_location, and only then give directions.", false);
+  session?.sendFacts("[NAV] The walker is pushing back on your directions. Do not repeat your last instruction or its wording. Work out what they mean: if they told you where they are, call find_place and set_my_location; if they want to go a way they know, call route_via; then give the next step in new words, describing it from where they stand right now.", false);
 }
 
 let session, nav, walkLog, watchId, factTimer, chatTimer, wakeLock, phase;
@@ -281,6 +287,24 @@ function toolHandler(name, args) {
           : { replanned: true, note: 'Route back updated (for you only; still only help when asked).', directions: directionsText(fresh) };
       }
       return r;
+    },
+    route_via: async () => {
+      const via = nav.foundPlace(args.place_name);
+      if (!via) return { error: 'That place is not in the last find_place results. Search for it first, then use an exact name.' };
+      // Going "via" the shop they're standing next to changes nothing; they almost surely meant another one.
+      if (distance(nav.pos, via) < 40) {
+        return { error: `${via.en || via.name} is right next to them (${Math.round(distance(nav.pos, via))} m), so it can't be the place further along they mean. Check the other matches from find_place (which side, how far) and pick the one that fits what they described.` };
+      }
+      const before = nav.remaining();
+      const theirs = await buildRoute(nav.pos, nav.route.dest, getProfile(profile()).landmarks, [via]);
+      nav.setRoute(theirs);
+      showRouteOnMap(theirs.line);
+      return {
+        their_way_m: theirs.distance,
+        previous_route_m: before,
+        note: 'This is the route now; the earlier directions no longer apply.',
+        directions: phase === 'there' ? directionsText(theirs) : '(way back: for you only; still only help when asked)',
+      };
     },
     start_way_back: () => {
       if (phase !== 'there') return { note: 'Already on the way back.' };
