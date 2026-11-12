@@ -1,9 +1,10 @@
 import { log } from './log.js';
-import { loadKakao, searchPlaces, landmarkNear } from './kakao.js';
+import { loadKakao, searchPlaces, placesNear, LANDMARK_TYPES, SURROUNDING_TYPES } from './kakao.js';
 import { walkingRoute } from './tmap.js';
 import { LiveSession } from './gemini.js';
 import { startAudio, play, stopPlayback, stopAudio } from './audio.js';
-import { outboundInstruction, Navigator } from './guide.js';
+import { outboundInstruction, Navigator, TOOLS } from './guide.js';
+import { side, distance } from './geo.js';
 
 // Used when the device can't give a GPS fix (e.g. testing on a laptop).
 const FALLBACK_START = { lat: 37.5568, lng: 126.9237, label: 'Hongik Univ. Station (test start)' };
@@ -52,14 +53,22 @@ async function showRoute(dest) {
   log(`route: ${route.distance} m, ${route.decisions.length} decision points`);
   $('route-summary').textContent = `${route.distance} m · about ${Math.round(route.time / 60)} min · ${route.decisions.length} turns`;
 
+  // Up to three landmarks per turn, described from where the walker arrives.
+  await Promise.all(route.decisions.map(async turn => {
+    const found = await placesNear(turn, 30, LANDMARK_TYPES, 3);
+    turn.landmarks = found.map(p => ({
+      ...p,
+      side: turn.heading != null ? side(turn.approach, turn.heading, p) : undefined,
+      distance: distance(turn, p),
+    }));
+  }));
   for (const turn of route.decisions) {
-    turn.landmark = await landmarkNear(turn);
     const li = document.createElement('li');
     li.className = 'turn';
-    const mark = turn.landmark
-      ? `${turn.landmark.name} (${turn.landmark.category}, ${turn.landmark.distance} m)`
+    const marks = turn.landmarks.length
+      ? turn.landmarks.map(p => `${p.name} <small>(${p.type}${p.side ? ', ' + p.side : ''})</small>`).join('<br>')
       : turn.tmapLandmark || 'no landmark found';
-    li.innerHTML = `<b>${turn.action}</b>${mark}<br><small>${turn.description}</small>`;
+    li.innerHTML = `<b>${turn.action}</b>${marks}<br><small>${turn.description}</small>`;
     $('turns').appendChild(li);
   }
   route.dest = dest;
@@ -97,9 +106,18 @@ async function startWalk() {
   $('route-section').hidden = true;
   $('walk-section').hidden = false;
 
+  navigator_ = new Navigator(route);
+  navigator_.update({ ...start, accuracy: 30 }); // until the first GPS fix arrives
+
   session = new LiveSession({
     apiKey,
     systemInstruction: outboundInstruction(route.dest, route),
+    tools: TOOLS,
+    onToolCall: name => {
+      if (name === 'get_surroundings') return navigator_.surroundings(pos => placesNear(pos, 60, SURROUNDING_TYPES, 12));
+      if (name === 'get_route_status') return navigator_.routeStatus();
+      return { error: `unknown tool ${name}` };
+    },
     onAudio: play,
     onInterrupted: stopPlayback,
     onTranscript: addLine,
@@ -110,24 +128,25 @@ async function startWalk() {
 
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
 
-  navigator_ = new Navigator(route);
-  let latest = null, announced = -1, nudged = false;
+  let announced = -1, nudged = false;
   watchId = navigator.geolocation.watchPosition(p => {
-    latest = { lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy };
-    const f = navigator_.update(latest);
-    $('nav-status').textContent = f.text.replace('[NAV] ', '');
-    if (f.done) return;
+    navigator_.update({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy });
+    const facts = navigator_.facts();
+    $('nav-status').textContent = facts.replace('[NAV] ', '');
+    const turn = navigator_.turns[navigator_.next];
+    if (!turn) return;
     // Moments worth a reply: approaching the next turn, or standing still for a while.
-    if (f.distance < 40 && announced !== navigator_.next) {
+    if (distance(navigator_.pos, turn) < 40 && announced !== navigator_.next) {
       announced = navigator_.next;
-      session.sendFacts(`${f.text} The turn is coming up.`, true);
+      session.sendFacts(`${facts} The turn is coming up: tell them, with its landmark and side.`, true);
     }
-    if (f.still >= 12 && !nudged) { nudged = true; session.sendFacts(`${f.text} The walker has stopped.`, true); }
-    if (f.still < 3) nudged = false;
+    const still = navigator_.stillFor();
+    if (still >= 12 && !nudged) { nudged = true; session.sendFacts(`${facts} The walker has stopped.`, true); }
+    if (still < 3) nudged = false;
   }, e => log('GPS error:', e.message), { enableHighAccuracy: true, maximumAge: 0 });
 
   // Routine facts every 8 s, added silently so the guide stays up to date.
-  factTimer = setInterval(() => latest && session.sendFacts(navigator_.update(latest).text, false), 8000);
+  factTimer = setInterval(() => session.sendFacts(navigator_.facts(), false), 8000);
 }
 
 function stopWalk() {

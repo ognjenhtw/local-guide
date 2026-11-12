@@ -1,4 +1,6 @@
 // TMAP pedestrian route API (SK Open API). Called directly from the browser.
+import { distance, bearing } from './geo.js';
+
 const KEY = import.meta.env.VITE_TMAP_APP_KEY;
 
 const TURNS = {
@@ -43,10 +45,22 @@ export async function walkingRoute(from, to) {
       tmapLandmark: f.properties.nearPoiName || null,
     }));
 
+  // The direction the walker is facing as they arrive at each point, so landmarks
+  // there can be described as left or right.
+  const verts = line.map(([lng, lat]) => ({ lat, lng }));
+  for (const p of points) {
+    let i = 0, best = Infinity;
+    verts.forEach((v, k) => { const d = distance(v, p); if (d < best) { best = d; i = k; } });
+    let j = i;
+    while (j > 0 && distance(verts[j], p) < 15) j--;
+    p.heading = j < i ? bearing(verts[j], p) : null; // the start point has no arrival direction
+    p.approach = j < i ? verts[j] : null; // a spot ~15 m before the point, on the way in
+  }
+
   return {
     distance: summary.totalDistance,
     time: summary.totalTime,
-    line, // [[lng, lat], ...] for route-following later
+    line: verts, // [{ lat, lng }, ...] along the whole route
     points,
     decisions: points.filter(p => isDecision(p.turnType)),
   };

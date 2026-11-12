@@ -14,8 +14,8 @@ const toB64 = buf => {
 const fromB64 = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer;
 
 export class LiveSession {
-  constructor({ apiKey, systemInstruction, onAudio, onInterrupted, onTranscript }) {
-    Object.assign(this, { apiKey, systemInstruction, onAudio, onInterrupted, onTranscript });
+  constructor({ apiKey, systemInstruction, tools, onToolCall, onAudio, onInterrupted, onTranscript }) {
+    Object.assign(this, { apiKey, systemInstruction, tools, onToolCall, onAudio, onInterrupted, onTranscript });
     this.handle = null; // session resumption handle: lets us reconnect without losing the conversation
     this.closed = false;
   }
@@ -47,6 +47,7 @@ export class LiveSession {
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
       },
       systemInstruction: { parts: [{ text: this.systemInstruction }] },
+      tools: this.tools,
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       realtimeInputConfig: {
@@ -67,6 +68,7 @@ export class LiveSession {
       this.handle = msg.sessionResumptionUpdate.newHandle;
     }
     if (msg.goAway) log(`Gemini will reconnect in ${msg.goAway.timeLeft}`);
+    if (msg.toolCall) this.answerTools(msg.toolCall.functionCalls);
     const sc = msg.serverContent;
     if (!sc) return;
     if (sc.interrupted) this.onInterrupted();
@@ -75,6 +77,17 @@ export class LiveSession {
     }
     if (sc.inputTranscription?.text) this.onTranscript('walker', sc.inputTranscription.text);
     if (sc.outputTranscription?.text) this.onTranscript('guide', sc.outputTranscription.text);
+  }
+
+  // The guide asked our code for facts (surroundings, route status): look them up and reply.
+  async answerTools(calls) {
+    const functionResponses = await Promise.all(calls.map(async fc => {
+      let response;
+      try { response = await this.onToolCall(fc.name, fc.args || {}); } catch (e) { response = { error: e.message }; }
+      log(`tool ${fc.name}`, response);
+      return { id: fc.id, name: fc.name, response };
+    }));
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ toolResponse: { functionResponses } }));
   }
 
   sendAudio(pcm16) {
