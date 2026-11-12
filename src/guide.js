@@ -53,11 +53,11 @@ const isBuilding = s => /빌딩|타워|아파트|오피스텔|빌라|맨션|하�
 const ACTIONS = {
   left: 'turn left', right: 'turn right', straight: 'keep going straight', 'U-turn': 'turn around',
   'sharp left': 'take the sharp left', 'slight left': 'bear left', 'slight right': 'bear right', 'sharp right': 'take the sharp right',
-  // TMAP crosswalk codes name where the crosswalk is ("on your left" = turn left and cross).
-  crosswalk: 'cross at the crosswalk straight ahead', 'crosswalk, then left': 'turn left and cross at the crosswalk',
-  'crosswalk, then right': 'turn right and cross at the crosswalk',
-  "crosswalk (2 o'clock)": 'bear right and cross at the crosswalk', "crosswalk (10 o'clock)": 'bear left and cross at the crosswalk',
-  "crosswalk (4 o'clock)": 'turn sharp right and cross at the crosswalk', "crosswalk (8 o'clock)": 'turn sharp left and cross at the crosswalk',
+  // TMAP crosswalk codes name where the crosswalk is ("on your left" = turn left onto it and cross).
+  crosswalk: 'cross at the crosswalk straight ahead', 'crosswalk, then left': 'turn left onto the crosswalk and cross the street',
+  'crosswalk, then right': 'turn right onto the crosswalk and cross the street',
+  "crosswalk (2 o'clock)": 'bear right onto the crosswalk and cross the street', "crosswalk (10 o'clock)": 'bear left onto the crosswalk and cross the street',
+  "crosswalk (4 o'clock)": 'turn sharp right onto the crosswalk and cross the street', "crosswalk (8 o'clock)": 'turn sharp left onto the crosswalk and cross the street',
   stairs: 'take the stairs', overpass: 'take the footbridge', underpass: 'take the underpass', arrive: 'you arrive',
 };
 
@@ -86,7 +86,9 @@ export function stepText(t, likes = [], prevShops = [], atStart = false) {
   const passes = pickShops(leg?.shops, likes)
     .map(p => `${spoken(p)} on your ${p.side}${p.after_m > 20 ? ` after about ${Math.round(p.after_m / 10) * 10} m` : ''}`).join(', ');
   const reaches = leg?.reaches && BIG_ROADS[leg.reaches] ? `, all the way to ${BIG_ROADS[leg.reaches]}` : '';
-  const then = leg && leg.distance ? `; then walk about ${Math.round(leg.distance / 10) * 10} m${reaches}${passes ? `, passing ${passes}` : ''}` : '';
+  // "Keep going straight" makes it unmistakable that the turn happens first and nothing else
+  // happens until the next step (not "cross, then turn").
+  const then = leg && leg.distance ? `, then keep going straight for about ${Math.round(leg.distance / 10) * 10} m${reaches}${passes ? `, passing ${passes}` : ''}` : '';
   const text = `${doIt}${then}.`;
   return text[0].toUpperCase() + text.slice(1);
 }
@@ -114,7 +116,7 @@ function stepData(t, i) {
   return [
     `Step ${i + 1}: ${ACTIONS[t.action] || t.action}${i === 0 && t.action.startsWith('crosswalk') ? ' (if they are already standing at this crosswalk, it is simply the crosswalk right by them)' : ''}.`,
     `  At the turn: ${[...(t.personal || []).map(mineText), ...(t.landmarks || []).map(placeData)].join('; ') || 'nothing listed'}${t.tmapLandmark && !isBuilding(t.tmapLandmark) ? `; map label: ${t.tmapLandmark}` : ''}.`,
-    leg.distance ? `  Then about ${Math.round(leg.distance)} m${leg.crosswalk ? ' (crossing a street on the way)' : ''}${leg.roads?.length ? ` along ${leg.roads.join(', ')} (street name: only if asked)` : ''}${leg.reaches ? `, ending at ${leg.reaches}${BIG_ROADS[leg.reaches] ? ` (${BIG_ROADS[leg.reaches]})` : ''}` : ''}, passing in order:` : null,
+    leg.distance ? `  Then straight ahead for about ${Math.round(leg.distance)} m with no turn until the next step${leg.crosswalk ? ' (this includes crossing the street)' : ''}${leg.roads?.length ? ` along ${leg.roads.join(', ')} (street name: only if asked)` : ''}${leg.reaches ? `, ending at ${leg.reaches}${BIG_ROADS[leg.reaches] ? ` (${BIG_ROADS[leg.reaches]})` : ''}` : ''}, passing in order:` : null,
     ...(leg.shops || []).map(p => `   - ${placeData(p)}`),
   ].filter(Boolean).join('\n');
 }
@@ -134,11 +136,13 @@ Rules:
 - Answer exactly the question asked, from the data given only. Never invent places, turns or facts.
 - Describe places so a foreigner recognises them: chains by brand ("7-Eleven", "Ediya Coffee"); other places by what they are, translating their kind ("a little walnut-cake shop", "a ginseng chicken soup place", "a pharmacy"). Never say a Korean name or a romanization of one. Give the side and roughly how far.
 - Point out turns and crosswalks by what is right at or just before them ("the crosswalk just after the pharmacy on your right").
+- Read the steps exactly. "Turn left onto the crosswalk and cross the street" means the crosswalk is on their left: they turn left onto it, cross, and on the far side carry straight on. It never means "cross, then turn left". After every step they go straight until the next step; there are no other turns. Never invent a turn that isn't a step.
 - If they ask about a type of place (cafes, restaurants, convenience stores…), list all of that type along the rest of the route, in order, with side.
 - If they ask where you're taking them or what comes next, give the remaining route from the step they're on, in order, with one or two landmarks per step.
 - If they describe where they are or what they see, match it against the data and the places around them, and tell them what that means for them.
 - Stay consistent with what was already said in the conversation unless it was wrong; if it was wrong, say so plainly.
-- Usually one to four short sentences. No street names unless asked. No greetings, no "let me check".`;
+- Keep it short: two or three sentences, unless they ask for the whole route. No street names unless asked. No greetings, no "let me check".
+- If they ask about something the data doesn't cover (a rotary, a building), say so plainly and describe the spot by distance and the shops around it instead.`;
 
 export const BRAIN_RULES_BACK = `${BRAIN_RULES}
 
@@ -167,12 +171,14 @@ How you sound:
 Practical bits:
 - English. Usually one or two short sentences, unless you're chatting or passing on a longer answer.
 - Never say Korean names or romanized Korean. Chains by brand ("7-Eleven"), everything else by what it is ("the pharmacy", "a little bakery"). Everything you're given is already written that way.
-- Never say "great question", "I'm here to help", "let's stick to the route" or "let's get back on track".
+- Never say "great question", "I'm here to help", "let's stick to the route" or "let's get back on track", and never narrate your thinking ("let me think through…", "the tool is still running").
+- Match numbers from find_place are for your tools only: never say them. Ask which one they mean by where it is ("the one right next to the cafe, or the one further down on the left?").
 - After you ask them something, stop and wait for their answer. Never answer for them.
 
 How you know the way: you don't work out directions yourself; your navigator does.
 - For ANY question about the way, where you're taking them, what's next, which crosswalk or turn, what they'll pass, what's around, what's on a side, or what's that way: call ask_navigator with their question in their own words. Then say its answer in your own voice, keeping every fact (places, sides, distances, order). Never change, shorten away or add directions.
-- A tiny filler before asking is fine ("hmm, okay so…"); never "let me check".
+- Start talking right away with a tiny natural filler before you ask ("hmm, okay so…", "right, so…"), so there's no dead air while the navigator thinks; never "let me check".
+- If they ask the same thing again, they didn't get an answer they could use: ask the navigator again with their exact words plus what was unclear, and say the new answer. Never just repeat yourself or only apologise.
 - When a [NAV] message gives you a step to say, say exactly that step in your own voice.
 
 Other tools:
@@ -189,8 +195,7 @@ Messages starting with [NAV] are live facts from their GPS, not things they said
 export function outboundInstruction(dest, route, personal) {
   return `${PERSONA}
 
-Right now you lead: you're walking them to ${dest.name}. The planned route, for your background only (use ask_navigator for questions):
-${directionsText(route)}
+Right now you lead: you're walking them to ${dest.name}, about ${route.distance} m away. You don't carry the route in your head; your navigator has it. So every direction you give comes either from a [NAV] message (which tells you exactly what step to say) or from ask_navigator. Never give a direction from memory or from guessing.
 ${route.likes?.length ? `\nThey like: ${route.likes.join(', ')}.` : ''}${personal.length ? `\nTheir own landmarks near this route: ${personal.map(mineText).join('; ')}.` : ''}
 
 When a [NAV] message says they're off the route, tell them straight and casually ("hmm, pretty sure you're off track, my guy"), then ask_navigator how to get back.

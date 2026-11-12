@@ -312,8 +312,7 @@ async function askNavigator(question) {
   const recent = transcript.filter(t => t.who !== 'note').slice(-12)
     .map(t => `${t.who === 'guide' ? 'Local' : 'Walker'}: ${t.text.trim()}`).join('\n');
   const prompt = [
-    'THE ROUTE', brainRouteData(nav.route),
-    '\nWHERE THE WALKER IS', nav.brainState(), around, that,
+    'WHERE THE WALKER IS', nav.brainState(), around, that,
     phase === 'back' ? `\nThis is help request number ${nav.helpAsks[step]} at this spot.` : '',
     '\nTHE CONVERSATION SO FAR', recent || '(just started)',
     `\nTHE WALKER ASKS: "${question}"`,
@@ -326,6 +325,7 @@ async function askNavigator(question) {
       model: $('brain-model').value,
       apiKey: brain === 'claude' ? $('key-claude').value.trim() : $('key-gemini').value.trim(),
       system: phase === 'back' ? BRAIN_RULES_BACK : BRAIN_RULES,
+      context: `THE ROUTE\n${brainRouteData(nav.route)}`,
       prompt,
     });
     log(`navigator answered in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
