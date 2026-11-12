@@ -45,10 +45,11 @@ const isBuilding = s => /빌딩|타워|아파트|오피스텔|빌라|맨션|하�
 const ACTIONS = {
   left: 'turn left', right: 'turn right', straight: 'keep going straight', 'U-turn': 'turn around',
   'sharp left': 'take the sharp left', 'slight left': 'bear left', 'slight right': 'bear right', 'sharp right': 'take the sharp right',
-  crosswalk: 'cross the street at the crosswalk', 'crosswalk, then left': 'cross the street at the crosswalk, and on the other side turn left',
-  'crosswalk, then right': 'cross the street at the crosswalk, and on the other side turn right',
-  "crosswalk (2 o'clock)": 'cross the street at the crosswalk, and on the other side bear right', "crosswalk (10 o'clock)": 'cross the street at the crosswalk, and on the other side bear left',
-  "crosswalk (4 o'clock)": 'cross the street at the crosswalk, and on the other side turn sharp right', "crosswalk (8 o'clock)": 'cross the street at the crosswalk, and on the other side turn sharp left',
+  // TMAP crosswalk codes name where the crosswalk is ("on your left" = turn left and cross).
+  crosswalk: 'cross at the crosswalk straight ahead', 'crosswalk, then left': 'turn left and cross at the crosswalk',
+  'crosswalk, then right': 'turn right and cross at the crosswalk',
+  "crosswalk (2 o'clock)": 'bear right and cross at the crosswalk', "crosswalk (10 o'clock)": 'bear left and cross at the crosswalk',
+  "crosswalk (4 o'clock)": 'turn sharp right and cross at the crosswalk', "crosswalk (8 o'clock)": 'turn sharp left and cross at the crosswalk',
   stairs: 'take the stairs', overpass: 'take the footbridge', underpass: 'take the underpass', arrive: 'you arrive',
 };
 
@@ -67,14 +68,12 @@ function turnMark(t, prevShops = []) {
 
 // One step of the route in plain spoken English, written by code so the voice never has to work
 // out directions itself: what to do, where (landmark and side), how far, and what they pass.
-export function stepText(t, likes = [], prevShops = []) {
+export function stepText(t, likes = [], prevShops = [], atStart = false) {
   const where = turnMark(t, prevShops);
-  const action = ACTIONS[t.action] || t.action;
-  // A crosswalk starts at the landmark and the turn happens on the far side, so say it in that order.
-  const [first, rest] = action.split(', and ');
-  const doIt = where
-    ? (t.action.startsWith('crosswalk') ? `${first} ${where}${rest ? `, and ${rest}` : ''}` : `${action} ${where}`)
-    : action;
+  // Right at the start, "left" or "right" would be measured from a few metres the walker
+  // hasn't walked yet, so a crosswalk there is just "the crosswalk right by you".
+  const action = atStart && t.action.startsWith('crosswalk') ? 'cross at the crosswalk right by you' : ACTIONS[t.action] || t.action;
+  const doIt = where ? `${action} ${where}` : action;
   const leg = t.leg;
   const passes = pickShops(leg?.shops, likes)
     .map(p => `${spoken(p)} on your ${p.side}${p.after_m > 20 ? ` after about ${Math.round(p.after_m / 10) * 10} m` : ''}`).join(', ');
@@ -88,7 +87,8 @@ export function directionsText(route, from = 0) {
   const likes = route.likes || [];
   const steps = route.decisions.slice(from).map((t, k) => {
     const prev = from + k === 0 ? route.startLeg?.shops : route.decisions[from + k - 1].leg?.shops;
-    return `${k + 1}. ${stepText(t, likes, prev)}`;
+    const atStart = from + k === 0 && (route.startLeg?.distance ?? 99) < 15;
+    return `${k + 1}. ${stepText(t, likes, prev, atStart)}`;
   });
   const first = route.decisions[from];
   const startShops = pickShops(route.startLeg?.shops, likes).map(p => `${spoken(p)} on your ${p.side}`).join(', ');
@@ -103,7 +103,7 @@ export function directionsText(route, from = 0) {
 function stepData(t, i) {
   const leg = t.leg || {};
   return [
-    `Step ${i + 1}: ${ACTIONS[t.action] || t.action}.`,
+    `Step ${i + 1}: ${ACTIONS[t.action] || t.action}${i === 0 && t.action.startsWith('crosswalk') ? ' (if they are already standing at this crosswalk, it is simply the crosswalk right by them)' : ''}.`,
     `  At the turn: ${[...(t.personal || []).map(mineText), ...(t.landmarks || []).map(placeData)].join('; ') || 'nothing listed'}${t.tmapLandmark && !isBuilding(t.tmapLandmark) ? `; map label: ${t.tmapLandmark}` : ''}.`,
     leg.distance ? `  Then about ${Math.round(leg.distance)} m${leg.crosswalk ? ' (crossing a street on the way)' : ''}${leg.roads?.length ? ` along ${leg.roads.join(', ')} (street name: only if asked)` : ''}, passing in order:` : null,
     ...(leg.shops || []).map(p => `   - ${placeData(p)}`),
@@ -343,7 +343,7 @@ export class Navigator {
     const i = this.next, t = this.turns[i];
     if (!t) return `${this.route.dest?.name || 'The destination'} is just ahead.`;
     const prev = i === 0 ? this.route.startLeg?.shops : this.turns[i - 1].leg?.shops;
-    return stepText(t, this.route.likes, prev);
+    return stepText(t, this.route.likes, prev, i === 0 && (this.route.startLeg?.distance ?? 99) < 15);
   }
 
   remaining() {

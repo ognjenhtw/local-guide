@@ -8,6 +8,7 @@ const TURNS = {
   16: 'sharp left', 17: 'slight left', 18: 'slight right', 19: 'sharp right',
   125: 'overpass', 126: 'underpass', 127: 'stairs', 128: 'ramp', 129: 'stairs and ramp',
   200: 'start', 201: 'arrive',
+  // 212/213 are "the crosswalk on your left/right" (좌측/우측 횡단보도); the geometry below decides the wording.
   211: 'crosswalk', 212: 'crosswalk, then left', 213: 'crosswalk, then right',
   214: 'crosswalk (8 o\'clock)', 215: 'crosswalk (10 o\'clock)',
   216: 'crosswalk (2 o\'clock)', 217: 'crosswalk (4 o\'clock)',
@@ -84,6 +85,17 @@ export async function walkingRoute(from, to, via = []) {
     while (j > 0 && distance(verts[j], p) < 15) j--;
     p.heading = j < i ? bearing(verts[j], p) : null; // the start point has no arrival direction
     p.approach = j < i ? verts[j] : null; // a spot ~15 m before the point, on the way in
+    // The way out: the first spot at least 12 m further along the path.
+    let o = i;
+    while (o < verts.length - 1 && distance(verts[o], p) < 12) o++;
+    p.outHeading = o > i ? bearing(p, verts[o]) : null;
+  }
+  // The angle of each turn from the path itself, kept for checking in the walk log. The wording
+  // comes from TMAP's codes: checked against this geometry, code 212 ("the crosswalk on your
+  // left") is a ~90° left onto the crosswalk, while TMAP places plain turn points up to ~15 m
+  // before the corner, where a measured angle would still read "straight".
+  for (const p of points) {
+    if (p.heading != null && p.outHeading != null) p.turnDeg = Math.round(((p.outHeading - p.heading + 540) % 360) - 180);
   }
 
   return {
