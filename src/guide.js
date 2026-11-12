@@ -13,10 +13,30 @@ const placeText = p => [
 
 const mineText = m => `"${m.label}" (the walker's own landmark${m.place_name ? `: ${m.place_name}` : ''}${m.note ? `; ${m.note}` : ''}${m.side ? `; ${m.side}` : ''})`;
 
-export function turnSummary(t, i) {
+export function turnSummary(t, i, likes = []) {
   const marks = [...(t.personal || []).map(mineText), ...(t.landmarks || []).map(placeText)];
-  return `${i + 1}. ${stepText(t)} [all landmarks there: ${marks.length ? marks.join('; ') : t.tmapLandmark || 'nothing listed'}]`;
+  return `${i + 1}. ${stepText(t, likes)} [all landmarks at the turn: ${marks.length ? marks.join('; ') : t.tmapLandmark || 'nothing listed'}]`;
 }
+
+// Kakao place types that match what the walker said they like.
+const LIKE_TYPES = [
+  [/coffee|cafe|café/i, 'cafe'], [/burger|food|eat|restaurant|pizza|ramen|noodle|bbq|chicken/i, 'restaurant'],
+  [/convenience|snack/i, 'convenience store'], [/pharmac|drug/i, 'pharmacy'], [/grocer|supermarket|market/i, 'supermarket'],
+];
+const likedTypes = likes => LIKE_TYPES.filter(([re]) => likes.some(l => re.test(l))).map(([, type]) => type);
+
+// The shops worth pointing out on a stretch, in walking order: things they like first, then
+// chains (big signs), then the rest; at most four.
+function pickShops(shops = [], likes = []) {
+  const liked = likedTypes(likes);
+  const score = p => (liked.includes(p.type) ? 0 : p.en ? 1 : 2);
+  return shops.slice().sort((a, b) => score(a) - score(b) || a.s - b.s).slice(0, 4).sort((a, b) => a.s - b.s);
+}
+
+const shopName = p => (p.en ? p.en : `${p.name} [reads "${p.reads}"]`);
+const passingText = (shops, likes) => pickShops(shops, likes)
+  .map(p => `${shopName(p)} (${p.type}) on your ${p.side}${p.after_m > 20 ? ` after about ${Math.round(p.after_m / 10) * 10} m` : ''}`)
+  .join(', ');
 
 // Korean names as the walker would hear them said: "다산로" -> "Dasanro".
 const say = s => (s ? romanize(s) : s);
@@ -38,7 +58,7 @@ const ACTIONS = {
 
 // One step of the route in plain English, written by code so the guide never has to work out
 // directions itself: what to do, where (landmark and side), then how far along which street.
-export function stepText(t) {
+export function stepText(t, likes = []) {
   const mine = t.personal?.[0];
   const mark = t.landmarks?.[0];
   const place = mine ? `their own landmark "${mine.label}"${mine.side ? ` (${mine.side})` : ''}`
@@ -52,10 +72,12 @@ export function stepText(t) {
     ? (t.action.startsWith('crosswalk') ? `${first} by ${place}${rest ? `, and ${rest}` : ''}` : `${action} at ${place}`)
     : action;
   const leg = t.leg;
-  // Shops people can see first; street and building names only as a footnote (walkers rarely know them).
-  const passes = leg?.passes.filter(p => !isBuilding(p)).slice(0, 2) || [];
+  // Shops people can see along the stretch (looked up along the route); TMAP's own point names
+  // only if there are none. Street names only as a footnote: walkers rarely know them.
+  const shops = leg?.shops?.length ? passingText(leg.shops, likes) : '';
+  const passes = shops || (leg?.passes.filter(p => !isBuilding(p)).slice(0, 2).map(tmapName).join(' and ') ?? '');
   const then = leg && leg.distance
-    ? `; then walk about ${Math.round(leg.distance / 10) * 10} m${passes.length ? `, passing ${passes.map(tmapName).join(' and ')}` : ''}${leg.roads.length ? ` (street: ${leg.roads.map(say).join(', ')}; only mention if asked)` : ''}`
+    ? `; then walk about ${Math.round(leg.distance / 10) * 10} m${passes ? `, passing ${passes}` : ''}${leg.roads.length ? ` (street: ${leg.roads.map(say).join(', ')}; only mention if asked)` : ''}`
     : '';
   const text = `${doIt}${then}.`;
   return text[0].toUpperCase() + text.slice(1);
@@ -63,10 +85,12 @@ export function stepText(t) {
 
 // The whole way from the walker's next step to the destination, numbered.
 export function directionsText(route, from = 0) {
-  const steps = route.decisions.slice(from).map((t, k) => `${k + 1}. ${stepText(t)}`);
+  const likes = route.likes || [];
+  const steps = route.decisions.slice(from).map((t, k) => `${k + 1}. ${stepText(t, likes)}`);
   const first = route.decisions[from];
+  const startShops = route.startLeg?.shops?.length ? `, passing ${passingText(route.startLeg.shops, likes)}` : '';
   const lead = from === 0 && first
-    ? `0. From where they are, head towards ${first.landmarks?.[0]?.en || (first.tmapLandmark && tmapName(first.tmapLandmark)) || 'the first turn'} (about ${Math.round(route.startLeg?.distance || 0)} m).`
+    ? `0. From where they are, head towards ${first.landmarks?.[0]?.en || (first.tmapLandmark && tmapName(first.tmapLandmark)) || 'the first turn'} (about ${Math.round(route.startLeg?.distance || 0)} m${startShops}).`
     : null;
   return [lead, ...steps, `Then ${route.dest?.name || 'the destination'} is right there.`].filter(Boolean).join('\n');
 }
@@ -107,6 +131,7 @@ Tools:
 - get_route_status: next turn, its landmarks, distance, whether they're off the route.
 - get_directions: the full remaining route as numbered steps with landmarks, streets and distances.
 - route_via: re-plan the route through a place they want to go by.
+- note_interest: remember something they like, so the places you point out fit them.
 - find_place: search near them for something they named.
 - set_my_location: when GPS is off and they've told you where they really are, set their position to that place (a name from find_place). The route is re-planned from there.
 - remember_landmark: save a landmark to the walker's personal map.
@@ -120,14 +145,18 @@ export function outboundInstruction(dest, route, personal) {
   return `${PERSONA}
 
 Right now you lead. You're walking them to ${dest.name}: about ${route.distance} m, ${route.decisions.length} turns. The planned route (written from map data; trust it over your own reasoning):
-${route.decisions.map(turnSummary).join('\n')}
+${directionsText(route)}
+${route.likes?.length ? `\nThey like: ${route.likes.join(', ')}. Point those out first when they're along the way.` : ''}
 
 Giving directions:
 - Say the next step with its landmark and side, the way it's written in the route. Don't work out turns yourself and never invent one.
 - Describe it from where they stand right now, with things they can see: "the crosswalk right in front of you", "the 7-Eleven on your right". Don't name the place they're already standing at as where to turn.
 - Street and building names: only if they ask. Most people don't know them and can't see them.
 - Never ask them for a branch name or an address. Tell shops apart by where they are: which side, which corner, how far.
-- If they want to go a way they know ("straight to the 7-Eleven on the corner, then right"), don't argue: find_place the spot they mean, call route_via, and if it works, go their way and say how it compares ("sure, that's only a minute longer").
+- If they want to go a way they know ("straight to the 7-Eleven on the corner, then right"), or describe a way that differs from yours, don't argue and don't repeat yours: find_place the spot they mean, call route_via, and go their way, saying how it compares ("sure, that's only a minute longer").
+- When they ask what they'll pass or what's on the way, name the places listed after "passing" in the steps, with their side, in order. Never say there's nothing when the steps list places.
+- When they tell you what they like ("I love coffee shops"), call note_interest, then point out matching places on the way.
+- After you ask them something ("do you see it?"), stop and wait for their answer. Never answer for them.
 - When they ask where you're taking them, what comes after, or how to get there, call get_directions and walk them through the next two or three steps with landmarks and streets.
 - If your position gets corrected (set_my_location), the route is re-planned and the earlier list no longer applies: use only the new directions you get back.
 ${personal.length ? `\nTheir own landmarks near this route: ${personal.map(mineText).join('; ')}.` : ''}
@@ -148,7 +177,7 @@ Now the roles switch. They just walked to their destination with you, and now TH
 - When a [NAV] message says they're off the route, tell them casually that this isn't the way you came ("ummm, pretty sure we didn't come this way") and let them figure out the fix unless they ask.
 
 The way back (for you only; don't recite it): about ${route.distance} m, ${route.decisions.length} turns:
-${route.decisions.map(turnSummary).join('\n')}
+${route.decisions.map((t, i) => turnSummary(t, i, route.likes)).join('\n')}
 ${personal.length ? `\nTheir own landmarks near this route: ${personal.map(mineText).join('; ')}.` : ''}
 
 What was said on the way there (most recent part):
@@ -215,6 +244,15 @@ export const TOOLS = [
       type: 'object',
       properties: { place_name: { type: 'string', description: 'Exact place name from find_place.' } },
       required: ['place_name'],
+    },
+  },
+  {
+    name: 'note_interest',
+    description: "Remember something the walker likes (e.g. 'coffee shops', 'burgers', 'record shops') in their profile, so places matching it are pointed out first on this and future routes.",
+    parameters: {
+      type: 'object',
+      properties: { interest: { type: 'string', description: 'What they like, in a few words.' } },
+      required: ['interest'],
     },
   },
   {
@@ -302,7 +340,7 @@ export class Navigator {
   turnFacts(t) {
     if (!t) return null;
     return {
-      step: stepText(t),
+      step: stepText(t, this.route.likes),
       action: t.action,
       distance_m: Math.round(distance(this.pos, t)),
       landmarks: [...(t.personal || []).map(mineText), ...(t.landmarks || []).map(placeText)],

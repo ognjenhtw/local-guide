@@ -3,8 +3,8 @@ import { loadKakao, searchPlaces, placesNear, findNear, areaAt, LANDMARK_TYPES, 
 import { walkingRoute } from './tmap.js';
 import { PROVIDERS, createSession } from './providers/index.js';
 import { outboundInstruction, returnInstruction, Navigator, TOOLS, directionsText } from './guide.js';
-import { side, distance, lineDistance } from './geo.js';
-import { profileNames, getProfile, saveLandmark, WalkLog, exportWalks, walksOf, deleteWalk, transcriptOf } from './profile.js';
+import { side, distance, lineDistance, project, pointsAlong } from './geo.js';
+import { profileNames, getProfile, saveLandmark, saveInterest, WalkLog, exportWalks, walksOf, deleteWalk, transcriptOf } from './profile.js';
 import { showPosition, showRoute as showRouteOnMap } from './debugmap.js';
 
 // Used when the device can't give a GPS fix (e.g. testing on a laptop).
@@ -135,12 +135,38 @@ async function onSearch(e) {
   }
 }
 
-// A walking route with landmarks at each turn: up to three Kakao places, described from
-// where the walker arrives, plus any of the walker's own landmarks close by.
+// Run async tasks with at most `n` at a time (Kakao limits how fast we may ask).
+async function pool(tasks, n) {
+  const it = tasks[Symbol.iterator]();
+  await Promise.all(Array.from({ length: n }, async () => { for (const task of it) await task(); }));
+}
+
+// Shops people notice, looked up every ~60 m along the whole route, in walking order with their side.
+const ALONG_TYPES = ['CE7', 'CS2', 'FD6', 'PM9', 'BK9', 'SW8', 'MT1'];
+async function shopsAlong(route) {
+  const found = new Map();
+  await pool(pointsAlong(route.line, 60).flatMap(pt => ALONG_TYPES.map(code => async () => {
+    for (const p of await placesNear(pt, 35, [code], 15)) if (!found.has(p.name)) found.set(p.name, p);
+  })), 6);
+  return [...found.values()]
+    .map(p => ({ ...p, ...project(route.line, p) }))
+    .filter(p => p.off < 30)
+    .sort((a, b) => a.s - b.s);
+}
+
+// A walking route with landmarks: at each turn up to three places described from where the
+// walker arrives, the shops along each stretch, and any of the walker's own landmarks close by.
 async function buildRoute(from, to, personal, via = []) {
   const route = await walkingRoute(from, to, via);
   route.dest = to;
+  route.likes = getProfile(profile()).likes || [];
   route.personal = personal.filter(m => lineDistance(m, route.line) < 50);
+  // Hand each stretch the shops that lie along it.
+  const shops = await shopsAlong(route);
+  const cuts = route.decisions.map(t => project(route.line, t).s);
+  const between = (from, to) => shops.filter(p => p.s >= from && p.s < to).map(p => ({ ...p, after_m: Math.round(p.s - from) }));
+  if (route.startLeg) route.startLeg.shops = between(0, cuts[0] ?? Infinity);
+  route.decisions.forEach((t, i) => { if (t.leg) t.leg.shops = between(cuts[i], cuts[i + 1] ?? Infinity); });
   await Promise.all(route.decisions.map(async turn => {
     const found = await placesNear(turn, 30, LANDMARK_TYPES, 3);
     turn.landmarks = found.map(p => ({
@@ -287,6 +313,11 @@ function toolHandler(name, args) {
           : { replanned: true, note: 'Route back updated (for you only; still only help when asked).', directions: directionsText(fresh) };
       }
       return r;
+    },
+    note_interest: () => {
+      const likes = saveInterest(profile(), args.interest);
+      nav.route.likes = likes; // directions from now on point out these first
+      return { saved: true, their_interests: likes, note: 'Directions now list matching places first.' };
     },
     route_via: async () => {
       const via = nav.foundPlace(args.place_name);

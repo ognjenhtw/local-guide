@@ -29,6 +29,16 @@ export function saveLandmark(name, landmark) {
   return all[name].landmarks.length;
 }
 
+// Things the walker likes ("coffee shops", "burgers"): used to pick which places to point out.
+export function saveInterest(name, interest) {
+  const all = read(KEY, {});
+  all[name] ??= { name, landmarks: [] };
+  all[name].likes ??= [];
+  if (!all[name].likes.includes(interest)) all[name].likes.push(interest);
+  write(KEY, all);
+  return all[name].likes;
+}
+
 // --- Walk logs ---------------------------------------------------------------------
 
 export class WalkLog {

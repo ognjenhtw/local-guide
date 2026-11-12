@@ -49,5 +49,40 @@ export function lineDistance(p, line) {
   return best;
 }
 
+// Where p lies relative to a route line: metres along it (s), metres off it, and on which side
+// (left/right as seen walking along the line).
+export function project(line, p) {
+  let best = { off: Infinity, s: 0, side: 'right' }, acc = 0;
+  for (let i = 1; i < line.length; i++) {
+    const a = line[i - 1], b = line[i];
+    const k = Math.cos(toRad(a.lat)) * 111320, m = 110540;
+    const bx = (b.lng - a.lng) * k, by = (b.lat - a.lat) * m, px = (p.lng - a.lng) * k, py = (p.lat - a.lat) * m;
+    const len2 = bx * bx + by * by, len = Math.sqrt(len2);
+    const t = len2 ? Math.max(0, Math.min(1, (px * bx + py * by) / len2)) : 0;
+    const off = Math.hypot(px - t * bx, py - t * by);
+    if (off < best.off) best = { off, s: acc + t * len, side: bx * py - by * px > 0 ? 'left' : 'right' };
+    acc += len;
+  }
+  return best;
+}
+
+// Points every `every` metres along a line, for looking things up along the whole route.
+export function pointsAlong(line, every) {
+  const out = [line[0]];
+  let carry = 0;
+  for (let i = 1; i < line.length; i++) {
+    const a = line[i - 1], b = line[i], len = distance(a, b);
+    let d = every - carry;
+    while (d < len) {
+      const f = d / len;
+      out.push({ lat: a.lat + (b.lat - a.lat) * f, lng: a.lng + (b.lng - a.lng) * f });
+      d += every;
+    }
+    carry = len - (d - every);
+  }
+  out.push(line.at(-1));
+  return out;
+}
+
 const COMPASS =['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
 export const compass = deg => COMPASS[Math.round(deg / 45) % 8];
