@@ -37,5 +37,14 @@ ul, ol { padding-left: 0; list-style: none; }
 .phase { font-weight: 600; }
 #transcript p { margin: 6px 0; }
 #transcript .guide { color: var(--accent); }
-#settings, #debug { margin-top: 24px; }
+#history, #settings, #debug { margin-top: 24px; }
+#walk-list li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+#walk-list li span { flex: 1; }
+#walk-list small { color: var(--muted); }
+button.small { padding: 6px 10px; font-size: 14px; margin: 0; }
+.danger-text { color: var(--danger) !important; }
+#walk-view p { margin: 6px 0; font-size: 14px; }
+#walk-view .guide, #transcript .guide { color: var(--accent); }
+#walk-view .note, #transcript .note { color: var(--muted); text-align: center; }
+#map { height: 260px; border-radius: 10px; margin: 8px 0; }
 #log { font-size: 12px; white-space: pre-wrap; color: var(--muted); max-height: 40vh; overflow: auto; }

@@ -3,6 +3,7 @@ import { distance, bearing, side, compass, destinationPoint, lineDistance } from
 
 const placeText = p => [
   p.brand ? `${p.name} (brand: ${p.brand}, ${p.type})` : `${p.name} (${p.type})`,
+  p.street ? `at ${p.street}` : null,
   p.side,
   p.distance != null ? `${Math.round(p.distance)} m away` : null,
 ].filter(Boolean).join(', ');
@@ -29,6 +30,7 @@ Be concrete (this matters most):
 - Never be vague. If they ask what's on a side, what's behind them, or what happens if they go another way, look it up with your tools and answer with real places, the street and the neighbourhood, like a friend who knows the area.
 - Only mention places that come from the route, your tools or search results. Never invent places, signs, colours or history, and never claim what a place sells, how good it is or how long it has been there unless a tool or search result told you. If you're not sure, say so the way a friend would ("never been in, but it looks like your kind of place").
 - Their facing direction is estimated. When a tool says it comes from the route rather than their movement, or GPS is worse than 25 m, check with them first ("you should have a GS25 on your left, see it?"). If what they see doesn't match, ask what they see and work it out together.
+- GPS can be tens of metres off, especially between tall buildings or indoors. What they see beats your GPS, always. If it doesn't add up, find out where they really are: ask what's around them, call find_place (it lists every match within about 300 m with its street), ask which one they mean if there are several ("the one on the corner, or the one mid-block next to the bakery?"), then call set_my_location with that place. After that, give directions from there.
 
 Safety: tell them where to cross, never when. You can't see traffic lights or cars, so never say it's safe or tell them to go now. While they're on a crosswalk, keep quiet or keep it very short.
 
@@ -37,6 +39,7 @@ Tools:
 - explore_direction: what's that way (ahead, left, right, behind): places, street, neighbourhood, and how much longer the walk gets. Use it for "what if I go the other way" and "what's over there".
 - get_route_status: next turn, its landmarks, distance, whether they're off the route.
 - find_place: search near them for something they named.
+- set_my_location: when GPS is off and they've told you where they really are, set their position to that place (a name from find_place). The route is re-planned from there.
 - remember_landmark: save a landmark to the walker's personal map.
 - start_way_back: call it when, after arriving, the walker says they want to head back. It switches you into the way-back mode where they lead.
 
@@ -123,6 +126,15 @@ export const TOOLS = [
     },
   },
   {
+    name: 'set_my_location',
+    description: "Correct the walker's position when GPS is wrong: put them at a place they confirmed they are next to. Use an exact name returned by find_place. The route is re-planned from there.",
+    parameters: {
+      type: 'object',
+      properties: { place_name: { type: 'string', description: 'Exact place name from find_place.' } },
+      required: ['place_name'],
+    },
+  },
+  {
     name: 'start_way_back',
     description: 'Switch to the way back, where the walker leads. Call it when they say they want to head back.',
     parameters: { type: 'object', properties: {} },
@@ -142,9 +154,21 @@ export class Navigator {
     this.found = []; // last find_place results, so remember_landmark can use their exact spot
   }
 
-  update(pos) {
+  update(raw) {
     const now = Date.now();
-    if (this.pos && distance(this.pos, pos) > 3) this.lastMoved = now;
+    this.raw = raw;
+    // After the walker told us where they really are, shift GPS by the same offset
+    // (poor fixes are often off in one direction) until GPS is good again.
+    if (this.correction && raw.accuracy <= 15) this.correction = null;
+    const pos = this.correction
+      ? { ...raw, lat: raw.lat + this.correction.dLat, lng: raw.lng + this.correction.dLng, accuracy: 15 }
+      : raw;
+    // Count it as walking only when they get clearly further than the GPS error from
+    // where they last stood; otherwise GPS jumps look like steps.
+    if (!this.anchor || distance(this.anchor, pos) > Math.max(8, raw.accuracy)) {
+      if (this.anchor) this.lastMoved = now;
+      this.anchor = pos;
+    }
     this.pos = pos;
     this.history.push({ ...pos, t: now });
     this.history = this.history.filter(h => now - h.t < 30000);
@@ -158,10 +182,12 @@ export class Navigator {
   isOff() { return this.offRoute() > Math.max(35, this.pos.accuracy || 0); }
   stillFor() { return Math.round((Date.now() - this.lastMoved) / 1000); }
 
-  // Facing direction: from recent movement if they have moved, otherwise along the route.
+  // Facing direction: from recent movement if they have clearly walked (good GPS, a step
+  // bigger than the error), otherwise along the route.
   heading() {
     const p = this.pos;
-    const moved = this.history.find(h => Date.now() - h.t < 20000 && distance(h, p) >= 10);
+    const moved = p.accuracy <= 25 && this.history.find(h => Date.now() - h.t < 25000 && h.accuracy <= 25
+      && distance(h, p) >= Math.max(12, 1.5 * Math.max(h.accuracy, p.accuracy)));
     if (moved) return { deg: bearing(moved, p), source: 'their recent movement' };
     const line = this.route.line;
     let k = 0, best = Infinity;
@@ -211,7 +237,31 @@ export class Navigator {
     const where = t
       ? `Next: ${t.action}${t.landmarks?.[0] ? ` near ${t.landmarks[0].brand || t.landmarks[0].name}` : ''}, ${Math.round(distance(this.pos, t))} m ahead (turn ${this.next + 1} of ${this.turns.length}).`
       : `Destination ${Math.round(distance(this.pos, this.route.dest))} m ahead.`;
-    return `[NAV] ${where} Off route: ${this.offRoute()} m. Standing still: ${this.stillFor()} s. GPS ±${Math.round(this.pos.accuracy)} m.`;
+    const gps = this.correction
+      ? 'Position set from what the walker told you.'
+      : this.pos.accuracy > 30
+        ? `GPS is poor (±${Math.round(this.pos.accuracy)} m): don't trust left/right or distances; ask what they see.`
+        : `GPS ±${Math.round(this.pos.accuracy)} m.`;
+    return `[NAV] ${where} Off route: ${this.offRoute()} m. Standing still: ${this.stillFor()} s. ${gps}`;
+  }
+
+  // The walker confirmed they are next to a place found with find_place: trust that over GPS.
+  setLocation(placeName) {
+    const p = this.found.find(f => f.name === placeName) || this.found.find(f => f.name.includes(placeName) || placeName.includes(f.name));
+    if (!p) return { error: 'That place is not in the last find_place results. Search again, then use an exact name.' };
+    const raw = this.raw || this.pos;
+    this.correction = { dLat: p.lat - raw.lat, dLng: p.lng - raw.lng };
+    this.pos = { lat: p.lat, lng: p.lng, accuracy: 15 };
+    this.history = [];
+    this.anchor = this.pos;
+    return { moved_m: Math.round(distance(raw, p)), now_at: p.name };
+  }
+
+  // A new route from the corrected position (same destination).
+  setRoute(route) {
+    this.route = route;
+    this.turns = route.decisions;
+    this.next = 0;
   }
 
   async surroundings({ placesNear }) {

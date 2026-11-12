@@ -62,6 +62,8 @@ function normalise(p) {
     lat: Number(p.y),
     lng: Number(p.x),
     distance: Number(p.distance),
+    // Street and number, e.g. "와우산로 94": tells apart two branches of the same chain.
+    street: (p.road_address_name || p.address_name || '').split(' ').slice(-2).join(' ') || undefined,
   };
 }
 

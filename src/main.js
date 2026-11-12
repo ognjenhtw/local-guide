@@ -4,7 +4,8 @@ import { walkingRoute } from './tmap.js';
 import { PROVIDERS, createSession } from './providers/index.js';
 import { outboundInstruction, returnInstruction, Navigator, TOOLS } from './guide.js';
 import { side, distance, lineDistance } from './geo.js';
-import { profileNames, getProfile, saveLandmark, WalkLog, exportWalks } from './profile.js';
+import { profileNames, getProfile, saveLandmark, WalkLog, exportWalks, walksOf, deleteWalk, transcriptOf } from './profile.js';
+import { showPosition, showRoute as showRouteOnMap } from './debugmap.js';
 
 // Used when the device can't give a GPS fix (e.g. testing on a laptop).
 const FALLBACK_START = { lat: 37.5568, lng: 126.9237, label: 'Hongik Univ. Station (test start)' };
@@ -58,6 +59,40 @@ function showProfile() {
   const p = getProfile(profile());
   store.set('profile', p.name);
   $('profile-info').textContent = `${p.landmarks.length} landmark${p.landmarks.length === 1 ? '' : 's'} on ${p.name}'s map`;
+  showWalks();
+}
+
+// "My walks": this profile's past conversations, to read or delete.
+function showWalks() {
+  const walks = walksOf(profile());
+  $('walks-title').textContent = `My walks (${walks.length})`;
+  const ul = $('walk-list');
+  ul.innerHTML = '';
+  $('walk-view').innerHTML = '';
+  for (const w of walks) {
+    const li = document.createElement('li');
+    const when = new Date(w.started).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    li.innerHTML = `<span>${when} · ${w.dest?.name || 'walk'} <small>(${w.provider})</small></span>`;
+    const view = Object.assign(document.createElement('button'), { className: 'secondary small', textContent: 'Read' });
+    const del = Object.assign(document.createElement('button'), { className: 'secondary small danger-text', textContent: 'Delete' });
+    view.onclick = () => {
+      $('walk-view').innerHTML = '';
+      for (const line of transcriptOf(w)) {
+        const p = document.createElement('p');
+        p.className = line.who;
+        p.textContent = line.who === 'note' ? line.text : `${line.who === 'guide' ? 'Local' : 'You'}: ${line.text}`;
+        $('walk-view').appendChild(p);
+      }
+      if (!$('walk-view').children.length) $('walk-view').textContent = 'Nothing was said on this walk.';
+    };
+    del.onclick = () => {
+      if (!confirm(`Delete the walk from ${when}? This can't be undone.`)) return;
+      deleteWalk(w.id);
+      showWalks();
+    };
+    li.append(view, del);
+    ul.appendChild(li);
+  }
 }
 
 function setupProfile() {
@@ -168,10 +203,9 @@ function addLine(who, text) {
 }
 
 function toolHandler(name, args) {
-  walkLog.add('tool', { name, args });
   const deps = {
     placesNear: pos => placesNear(pos, 60, SURROUNDING_TYPES, 12),
-    findNear,
+    findNear: (pos, terms) => findNear(pos, terms, 300, 8), // wide, so different branches of a chain can be told apart
     areaAt,
     routeFrom: pos => walkingRoute(pos, nav.route.dest),
   };
@@ -185,6 +219,21 @@ function toolHandler(name, args) {
       showProfile();
       return r;
     },
+    set_my_location: async () => {
+      const r = nav.setLocation(args.place_name);
+      if (r.error) return r;
+      showPosition(nav.pos);
+      // Far from the planned route: plan again from where they really are.
+      if (nav.offRoute() > 40) {
+        const fresh = await buildRoute(nav.pos, nav.route.dest, getProfile(profile()).landmarks);
+        nav.setRoute(fresh);
+        showRouteOnMap(fresh.line);
+        r.route = phase === 'there'
+          ? { replanned: true, next_turn: nav.turnFacts(nav.turns[0]), distance_m: fresh.distance }
+          : { replanned: true, note: 'Route back updated; still only help when asked.' };
+      }
+      return r;
+    },
     start_way_back: () => {
       if (phase !== 'there') return { note: 'Already on the way back.' };
       // Give the guide a moment to say its line before the switch.
@@ -192,8 +241,8 @@ function toolHandler(name, args) {
       return { switching: true, note: 'Say one short line; in a moment you switch to the way back.' };
     },
   }[name];
-  const result = run ? run() : { error: `unknown tool ${name}` };
-  Promise.resolve(result).then(r => log(`tool ${name}`, r));
+  const result = Promise.resolve(run ? run() : { error: `unknown tool ${name}` });
+  result.then(r => { log(`tool ${name}`, r); walkLog.add('tool', { name, args, result: r }); });
   return result;
 }
 
@@ -223,7 +272,8 @@ function trackPosition() {
   let announced = -1, nudged = false, offAlerted = false, arrivedSaid = false;
   watchId = navigator.geolocation.watchPosition(p => {
     nav.update({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy });
-    walkLog.add('gps', { lat: nav.pos.lat, lng: nav.pos.lng, acc: Math.round(nav.pos.accuracy) });
+    walkLog.add('gps', { lat: nav.pos.lat, lng: nav.pos.lng, acc: Math.round(p.coords.accuracy), corrected: !!nav.correction });
+    showPosition(nav.pos);
     const facts = nav.facts();
     $('nav-status').textContent = facts.replace('[NAV] ', '');
 
@@ -275,6 +325,8 @@ async function startWalk() {
   walkLog = new WalkLog({ profile: profile(), provider: settings.provider(), model: settings.model(), voice: settings.voice(), start, dest: route.dest });
   nav = new Navigator(route, route.personal.slice());
   nav.update({ ...start, accuracy: start.accuracy || 30 }); // until the first GPS fix arrives
+  showPosition(nav.pos);
+  showRouteOnMap(route.line);
 
   session = await openSession(outboundInstruction(route.dest, route, route.personal));
   session.sendFacts('[NAV] The walker is ready at the start. Say hi like a friend picking up the phone, and get them going.', true);
@@ -291,11 +343,14 @@ async function headBack() {
   showPhase();
   addLine('note', ' — heading back — ');
 
-  const here = nav.pos;
+  const here = nav.pos, raw = nav.raw || nav.pos; // corrected position for the route, raw GPS for the tracker
   const backRoute = await buildRoute(here, { ...start, name: start.label }, getProfile(profile()).landmarks);
   walkLog.add('phase', { phase: 'back', route_m: backRoute.distance });
+  const correction = nav.correction;
   nav = new Navigator(backRoute, backRoute.personal.slice());
-  nav.update(here);
+  nav.correction = correction; // keep the walker's own position fix
+  nav.update(raw);
+  showRouteOnMap(backRoute.line);
 
   const recent = transcript.filter(t => t.who !== 'note').slice(-30)
     .map(t => `${t.who === 'guide' ? 'You' : 'Walker'}: ${t.text.trim()}`).join('\n').slice(-3000);
@@ -317,6 +372,7 @@ function stopWalk() {
   walkLog?.save();
   $('walk-section').hidden = true;
   $('route-section').hidden = false;
+  showWalks();
   log('walk stopped and saved');
 }
 
