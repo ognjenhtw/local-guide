@@ -1,8 +1,8 @@
 // Gemini Live: one bidirectional WebSocket carrying the walker's voice up
 // and the guide's voice (plus transcripts) back.
-import { log } from './log.js';
+import { log } from '../log.js';
+import { startAudio, play, stopPlayback, stopAudio } from '../audio.js';
 
-const MODEL = 'models/gemini-3.8-live';
 const URL_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 
 const toB64 = buf => {
@@ -13,11 +13,25 @@ const toB64 = buf => {
 };
 const fromB64 = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer;
 
-export class LiveSession {
-  constructor({ apiKey, systemInstruction, tools, onToolCall, onAudio, onInterrupted, onTranscript }) {
-    Object.assign(this, { apiKey, systemInstruction, tools, onToolCall, onAudio, onInterrupted, onTranscript });
+// Gemini expects schema types in upper case ("OBJECT", "STRING"…).
+function geminiSchema(s) {
+  if (!s || typeof s !== 'object') return s;
+  const out = Array.isArray(s) ? [] : {};
+  for (const [k, v] of Object.entries(s)) out[k] = k === 'type' && typeof v === 'string' ? v.toUpperCase() : geminiSchema(v);
+  return out;
+}
+
+export class GeminiSession {
+  constructor({ apiKey, model, voice, instructions, tools, search, onToolCall, onTranscript }) {
+    Object.assign(this, { apiKey, model, voice, instructions, tools, search, onToolCall, onTranscript });
     this.handle = null; // session resumption handle: lets us reconnect without losing the conversation
     this.closed = false;
+  }
+
+  // Must be called from a tap: iOS only unlocks audio inside a user gesture.
+  async start() {
+    await startAudio(chunk => this.sendAudio(chunk));
+    await this.connect();
   }
 
   connect() {
@@ -27,8 +41,13 @@ export class LiveSession {
       ws.onopen = () => ws.send(JSON.stringify({ setup: this.setupMessage() }));
       ws.onmessage = async e => {
         const msg = JSON.parse(typeof e.data === 'string' ? e.data : await e.data.text());
-        if (msg.setupComplete) { log('Gemini connected'); resolve(); }
-        this.handle_(msg);
+        if (msg.setupComplete) {
+          log('Gemini connected');
+          resolve();
+          this.onReady?.();
+          this.onReady = null;
+        }
+        this.onMessage(msg);
       };
       ws.onerror = () => reject(new Error('Gemini connection failed'));
       ws.onclose = e => {
@@ -41,13 +60,17 @@ export class LiveSession {
 
   setupMessage() {
     return {
-      model: MODEL,
+      model: `models/${this.model}`,
       generationConfig: {
         responseModalities: ['AUDIO'],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.voice } } },
       },
-      systemInstruction: { parts: [{ text: this.systemInstruction }] },
-      tools: this.tools,
+      systemInstruction: { parts: [{ text: this.instructions }] },
+      tools: [
+        { functionDeclarations: this.tools.map(t => ({ ...t, parameters: geminiSchema(t.parameters), behavior: 'BLOCKING' })) },
+        // Facts about places. Not part of the free tier: with a free key the connection is refused.
+        ...(this.search ? [{ googleSearch: {} }] : []),
+      ],
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       realtimeInputConfig: {
@@ -63,7 +86,7 @@ export class LiveSession {
     };
   }
 
-  handle_(msg) {
+  onMessage(msg) {
     if (msg.sessionResumptionUpdate?.resumable && msg.sessionResumptionUpdate.newHandle) {
       this.handle = msg.sessionResumptionUpdate.newHandle;
     }
@@ -71,20 +94,18 @@ export class LiveSession {
     if (msg.toolCall) this.answerTools(msg.toolCall.functionCalls);
     const sc = msg.serverContent;
     if (!sc) return;
-    if (sc.interrupted) this.onInterrupted();
+    if (sc.interrupted) stopPlayback();
     for (const part of sc.modelTurn?.parts || []) {
-      if (part.inlineData?.data) this.onAudio(fromB64(part.inlineData.data));
+      if (part.inlineData?.data) play(fromB64(part.inlineData.data));
     }
     if (sc.inputTranscription?.text) this.onTranscript('walker', sc.inputTranscription.text);
     if (sc.outputTranscription?.text) this.onTranscript('guide', sc.outputTranscription.text);
   }
 
-  // The guide asked our code for facts (surroundings, route status): look them up and reply.
   async answerTools(calls) {
     const functionResponses = await Promise.all(calls.map(async fc => {
       let response;
       try { response = await this.onToolCall(fc.name, fc.args || {}); } catch (e) { response = { error: e.message }; }
-      log(`tool ${fc.name}`, response);
       return { id: fc.id, name: fc.name, response };
     }));
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ toolResponse: { functionResponses } }));
@@ -104,8 +125,21 @@ export class LiveSession {
     }
   }
 
+  // New instructions mean a fresh conversation for Gemini: reconnect without the old
+  // resumption handle while the microphone and speaker keep running.
+  switchInstructions(instructions) {
+    this.instructions = instructions;
+    this.handle = null;
+    stopPlayback();
+    return new Promise(resolve => {
+      this.onReady = resolve;
+      this.ws.close(); // onclose reconnects with the new setup
+    });
+  }
+
   close() {
     this.closed = true;
     this.ws?.close();
+    stopAudio();
   }
 }

@@ -25,5 +25,29 @@ export function side(from, heading, target) {
   return rel < 60 ? 'ahead on the right' : 'on the right';
 }
 
-const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+// The point `meters` away from `from` in the direction `deg`.
+export function destinationPoint(from, deg, meters) {
+  const d = meters / 6371000, b = toRad(deg), la = toRad(from.lat), lo = toRad(from.lng);
+  const lat = Math.asin(Math.sin(la) * Math.cos(d) + Math.cos(la) * Math.sin(d) * Math.cos(b));
+  const lng = lo + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(la), Math.cos(d) - Math.sin(la) * Math.sin(lat));
+  return { lat: toDeg(lat), lng: toDeg(lng) };
+}
+
+// Distance from point p to the segment a–b, in metres (flat-earth approximation, fine at street scale).
+export function segmentDistance(p, a, b) {
+  const k = Math.cos(toRad(p.lat)) * 111320, m = 110540;
+  const ax = (a.lng - p.lng) * k, ay = (a.lat - p.lat) * m, bx = (b.lng - p.lng) * k, by = (b.lat - p.lat) * m;
+  const dx = bx - ax, dy = by - ay, len = dx * dx + dy * dy;
+  const t = len ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len)) : 0;
+  return Math.hypot(ax + t * dx, ay + t * dy);
+}
+
+// Distance from p to the nearest point of a polyline [{ lat, lng }, ...].
+export function lineDistance(p, line) {
+  let best = Infinity;
+  for (let i = 1; i < line.length; i++) best = Math.min(best, segmentDistance(p, line[i - 1], line[i]));
+  return best;
+}
+
+const COMPASS =['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
 export const compass = deg => COMPASS[Math.round(deg / 45) % 8];

@@ -65,6 +65,37 @@ function normalise(p) {
   };
 }
 
+// Places matching any of the walker's words within `radius` metres, nearest first.
+export async function findNear({ lat, lng }, terms, radius = 150, limit = 6) {
+  await loadKakao();
+  const location = new window.kakao.maps.LatLng(lat, lng);
+  const results = await Promise.all(terms.map(q =>
+    call('keywordSearch', q, { location, radius, sort: window.kakao.maps.services.SortBy.DISTANCE })));
+  const seen = new Set();
+  return results.flat()
+    .map(normalise)
+    .filter(p => !seen.has(p.name) && seen.add(p.name))
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, limit);
+}
+
+// Street and neighbourhood at a point, e.g. { street: '와우산로', area: '서교동' }.
+export async function areaAt({ lat, lng }) {
+  await loadKakao();
+  const geocoder = new window.kakao.maps.services.Geocoder();
+  return new Promise(resolve => {
+    geocoder.coord2Address(lng, lat, (res, status) => {
+      if (status !== window.kakao.maps.services.Status.OK || !res[0]) return resolve({});
+      const r = res[0];
+      resolve({
+        street: r.road_address?.road_name,
+        area: r.address?.region_3depth_name,
+        district: r.address?.region_2depth_name,
+      });
+    });
+  });
+}
+
 // Places within `radius` metres of a point, nearest first, at most `limit`.
 export async function placesNear({ lat, lng }, radius, types, limit = 10) {
   await loadKakao();
