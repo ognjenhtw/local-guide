@@ -7,11 +7,12 @@ import { Talk } from './talk.js';
 import { streetsAround, frontOf } from './osm.js';
 import { distance, bearing, compass } from './geo.js';
 
-// Openers start from a different angle each walk, so they don't all sound alike.
+// Openers start from a different direction each walk, so they don't all sound alike. All of
+// them low-key: a friend picking up the phone, not a comedian.
 const ANGLES = [
-  'tease them a little about their choice', 'ask what they are going to get', 'guess their order and be cheeky about it',
-  'get a bit hyped about the place', 'a dry joke about this kind of place', 'ask what the occasion is',
-  'a Seoul-life observation that fits the place', 'pretend to be offended you were not invited',
+  'ask what they are getting', 'a short casual reaction to the place', 'ask if they have been there before',
+  'a small, dry tease about their choice, only if it comes naturally', 'ask what made them pick it',
+  'guess what they will get, casually',
 ];
 
 export class Walk {
@@ -38,7 +39,7 @@ export class Walk {
     const reliable = startFix.fixed || startFix.accuracy <= 25;
     const angle = ANGLES[Math.floor(Math.random() * ANGLES.length)];
     this.talk.event([
-      `The walk just started: they picked ${dest.name}${dest.kind ? ` (${dest.kind})` : ''}. Angle for your opener: ${angle}.`,
+      `The walk just started: they picked ${dest.name}${dest.kind ? ` (${dest.kind})` : ''}. For your opener: ${angle}.`,
       pastOpeners.length ? `Openers you've used on earlier walks, so do something clearly different: ${pastOpeners.map(o => `"${o}"`).join(' / ')}.` : '',
       reliable ? 'Their position is reliable.' : 'GPS is poor right now, so later you will ask what they see.',
     ].filter(Boolean).join(' '), 'start');
