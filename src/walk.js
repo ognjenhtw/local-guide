@@ -17,12 +17,12 @@ const ANGLES = [
 
 export class Walk {
   // deps: { buildRoute, findNear, placesNear, surroundingTypes, saveLandmark, saveInterest }
-  constructor({ voice, apiKey, model, start, route, profile = {}, deps, log = () => {}, onLine = () => {}, onRoute = () => {}, onPhase = () => {} }) {
+  constructor({ voice, apiKey, model, start, route, profile = {}, deps, log = () => {}, onLine = () => {}, onNote = () => {}, onRoute = () => {}, onPhase = () => {} }) {
     Object.assign(this, { voice, start, deps, profile, log, onRoute, onPhase });
     this.phase = 'there';
     this.nav = new Navigator(route, (route.personal || []).slice());
     this.mind = new Mind({ apiKey, model, log, handlers: this.tools() });
-    this.talk = new Talk({ voice, mind: this.mind, log, onLine, context: ctx => this.context(ctx) });
+    this.talk = new Talk({ voice, mind: this.mind, log, onLine, onNote, context: ctx => this.context(ctx) });
     this.announced = new Set();
     this.offCount = 0;
     this.lastFix = 0;

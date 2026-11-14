@@ -246,6 +246,7 @@ function prepareWalk() {
     },
     log: (type, data) => { log(type, data ?? ''); walkLog?.add('event', { what: type, data }); },
     onLine: text => addLine('guide', text),
+    onNote: text => addLine('note', text),
     onRoute: r => { showRouteOnMap(r.line); walkLog?.add('route', { m: r.distance, turns: r.decisions.length }); },
     onPhase: ph => { showPhase(ph); addLine('note', '— heading back —'); walkLog?.add('phase', { phase: ph }); },
   });

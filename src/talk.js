@@ -5,8 +5,8 @@
 //   everything they said is answered together.
 // - If the walker starts talking while the guide speaks, the guide stops (barge-in).
 export class Talk {
-  constructor({ voice, mind, context = () => ({}), onLine = () => {}, log = () => {} }) {
-    Object.assign(this, { voice, mind, context, onLine, log });
+  constructor({ voice, mind, context = () => ({}), onLine = () => {}, onNote = () => {}, log = () => {} }) {
+    Object.assign(this, { voice, mind, context, onLine, onNote, log });
     this.heard = []; // what the walker said that hasn't been answered yet
     this.events = []; // app moments not handled yet: [{ text, key }]
     this.state = 'idle'; // idle | thinking | speaking
@@ -80,10 +80,20 @@ export class Talk {
       const ctx = await this.context({ heard: heard.length > 0 });
       // History stays append-only (thinking blocks must not be edited), so a cut-off line is noted now.
       if (this.cutOff) { events.unshift({ text: 'Your last line got cut off: they started talking over you.' }); this.cutOff = false; }
-      const { say, ms } = await this.mind.turn({
+      const ask = () => this.mind.turn({
         heard, events: events.map(e => e.text), ...ctx, signal: ctrl.signal, onSentence,
         onToolStart: () => { this.abortable = false; },
       });
+      let result;
+      try {
+        result = await ask();
+      } catch (err) {
+        // Most failures are a dropped or overloaded request: try once more, quietly.
+        if (ctrl.signal.aborted || utter) throw err;
+        this.log('mind failed, retrying', `${err.status || ''} ${err.message}`);
+        result = await ask();
+      }
+      const { say, ms } = result;
       this.log('mind', { ms, heard, events: events.map(e => e.text), say });
       if (utter) {
         const u = await utter;
@@ -98,8 +108,10 @@ export class Talk {
         this.heard.unshift(...heard);
         this.events.unshift(...events);
       } else {
-        this.log('mind failed', err.message);
-        if (utter) (await utter).end(); else await this.speak("Ugh, my phone glitched for a sec. Say that again?");
+        this.log('mind failed', `${err.status || ''} ${err.message}`);
+        this.onNote(`(the guide couldn't answer: ${err.status || ''} ${err.message})`);
+        // Only when they actually said something does it ask them to repeat it; otherwise it stays quiet.
+        if (utter) (await utter).end(); else if (heard.length) await this.speak("Sorry, I didn't catch that. Say it again?");
       }
     } finally {
       this.state = 'idle';
