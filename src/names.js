@@ -29,12 +29,11 @@ export function romanize(text) {
   return out.replace(/(^|\s)([a-z])/g, (_, s, c) => s + c.toUpperCase());
 }
 
-// Chains only: "세븐일레븐 신당중앙점" -> "7-Eleven (Sindangjungang branch)". Other names return
-// undefined: many are English words written in Korean (파크닉 = Parknic), which the guide
-// recognises better than a letter-by-letter romanization would.
+// Chains only, by brand: "세븐일레븐 신당중앙점" -> "7-Eleven". The branch is left out on purpose:
+// a romanized branch name ("Sindangjungang") is exactly what the walker must never hear.
+// Other names return undefined: many are English words written in Korean (파크닉 = Parknic),
+// which the guide recognises better than a letter-by-letter romanization would.
 export function englishName(name, brand) {
   const key = brand && BRANDS[brand] ? brand : Object.keys(BRANDS).find(b => name.startsWith(b));
-  if (!key) return undefined;
-  const rest = name.slice(key.length).trim().replace(/(지점|점)$/, '').trim();
-  return rest ? `${BRANDS[key]} (${romanize(rest)} branch)` : BRANDS[key];
+  return key ? BRANDS[key] : undefined;
 }

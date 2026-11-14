@@ -62,17 +62,19 @@ export async function walkingRoute(from, to, via = []) {
   // The leg after each decision point: distance, streets and landmarks until the next decision.
   for (let i = 0; i < points.length; i++) {
     if (!isDecision(points[i].turnType) && points[i].turnType !== 200) continue;
-    const leg = { distance: 0, roads: [], passes: [], crosswalk: false };
+    const leg = { distance: 0, roads: [], roadLength: {}, passes: [], crosswalk: false };
     for (let j = i; j < points.length; j++) {
       if (j > i && (isDecision(points[j].turnType) || points[j].turnType === 201)) {
         // The road the stretch ends on ("…all the way down to Jongno").
         leg.reaches = points[j].segs.find(s => s.road && !GENERIC_ROADS.includes(s.road))?.road || null;
         break;
       }
-      if (j > i && points[j].tmapLandmark) leg.passes.push(points[j].tmapLandmark);
+      if (j > i && points[j].tmapLandmark) leg.passes.push({ name: points[j].tmapLandmark, lat: points[j].lat, lng: points[j].lng });
       for (const s of points[j].segs) {
         leg.distance += s.distance;
         if (s.road && !GENERIC_ROADS.includes(s.road) && !leg.roads.includes(s.road)) leg.roads.push(s.road);
+        if (s.road && !GENERIC_ROADS.includes(s.road)) leg.roadLength[s.road] = (leg.roadLength[s.road] || 0) + s.distance;
+        if (s.crosswalk && !leg.crosswalk) leg.crossLength = s.distance; // the first crossing on this stretch
         leg.crosswalk ||= s.crosswalk;
       }
     }
