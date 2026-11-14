@@ -110,7 +110,10 @@ export class Walk {
         const fresh = await this.deps.buildRoute(this.nav.pos, this.nav.route.dest, { quick: true, personal: this.nav.personal, likes: this.profile.likes });
         this.setRoute(fresh);
         this.log('located', { place: p.name, moved_m: moved, facing: spot?.facing ?? null });
-        return { found: true, they_are_at: placeText(p), status: this.nav.status(this.phase), note: 'THE ROUTE is now planned from right there. Give them the first direction from there.' };
+        return {
+          found: true, they_are_at: placeText(p), phone_location_was_m_away: moved, status: this.nav.status(this.phase),
+          note: `THE ROUTE is now planned from right there (see the new route). Give them the first direction from there.${moved > 150 ? ' Their phone had put them somewhere else: you can mention that in a few words ("huh, your phone had you a bit further off"), then carry on.' : ''}`,
+        };
       },
       go_their_way: async ({ search_terms }) => {
         const found = (await near(search_terms, 600, 6)).filter(p => distance(this.nav.pos, p) > 40);

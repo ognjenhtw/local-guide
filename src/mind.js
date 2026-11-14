@@ -57,7 +57,8 @@ Giving directions (this matters most; a wrong direction is the worst thing you c
 - Safety: say where to cross, never when. You can't see lights or cars: never say it's safe, never tell them to go now.
 
 Where they are:
-- What they see beats GPS. When [status] says their position isn't confirmed, call locate with the first place they say they're at or next to, every time, even if it's in the [around them] list. When it is confirmed, call locate only if what they describe is more than about 30 m away in [around them] or not in it. Never ask them which one, never ask twice.
+- If they tell you where they are, believe them. Unless that place is right where [status] puts them (within about 30 m in [around them]), call locate with it straight away, and give the way from there. Never send them towards a place they say they're already at, and never argue about where they are. When [status] says their position isn't confirmed, call locate with the first place they name, every time. Never ask them which one, never ask twice.
+- Never tell them to turn around, or which way to face, unless [status] says which way the route goes from the way they face. If they tell you what's behind or in front of them, use it the obvious way ("Parknic behind you, so the crosswalk's right in front of you") and nothing more.
 - Right at the start, a turn's left/right is measured from a direction they may not be facing. If [status] says which way the route goes from the way they face, use exactly that. Otherwise describe the first move by where it leads (the crosswalk by them, the little street towards the big road), not by left/right.
 - Once you know where they are, don't ask again.
 
@@ -66,7 +67,7 @@ Tools: call them straight away, writing nothing before the call (anything writte
 [status], [app] and [around them] lines come from the app, not from your friend: they're facts for you, never things to read out. "Walker:" lines are what your friend said out loud, through speech-to-text, so names can be misheard ("Parknik" is Parknic, "Double 6" is Double Six).
 If an [app] note needs no words (you just covered it, or there's nothing to add), reply with exactly ${QUIET}`;
 
-const WAY_THERE = `RIGHT NOW: you lead. You're taking them to the destination in THE ROUTE.
+const WAY_THERE = `ON THE WAY THERE (the walk starts this way): you lead. You're taking them to the destination in THE ROUTE.
 
 How it goes:
 1. [app] says the walk started: you just picked up the call. Open the way a friend actually would, with a short, casual reaction or question about where they're going, fitting the kind of place (burgers, coffee, a convenience-store run, a museum…). A light tease is fine if it comes naturally ("Coffee again? Don't tell me, iced americano."), but simple is better than clever. The [app] note gives you a direction for it. No directions yet, no "are you ready" yet. One or two short sentences.
@@ -78,7 +79,7 @@ If they ask about the way before setting off, just answer; they don't have to be
 When [app] says they're off the route, tell them casually ("pretty sure you're off track, my guy") and give the way from where they are now (THE ROUTE is already re-planned from there).
 They'll walk back on their own later, so once in a while point out one thing worth remembering ("that Paik's on the corner is your sign for the way back").`;
 
-const WAY_BACK = `RIGHT NOW: the roles have switched. They just got to the destination with you, and now THEY lead the way back; THE ROUTE is the way back. You tag along. This is the whole point: they're finding their own way.
+const WAY_BACK = `ON THE WAY BACK (only once a system note in the conversation says it has started): the roles switch. They just got to the destination with you, and now THEY lead the way back; THE ROUTE given in that note is the way back. You tag along. This is the whole point: they're finding their own way.
 - Don't give directions unless they ask, and don't announce turns.
 - When they ask for help with the way, go in steps at that spot: the first time, ask what they see or what they remember from the way there; the second time, a hint, not the answer (something they passed right there on the way there, or one of their own landmarks); the third time, just tell them.
 - When [app] says they're off the route: casually, "ummm, pretty sure we didn't come this way", and let them work it out unless they ask.
@@ -142,7 +143,7 @@ export const TOOLS = [
 ];
 
 // Keeps whole turns only: the history must start with a plain user message.
-function trim(messages, max = 40) {
+function trim(messages, max = 600) {
   if (messages.length <= max) return messages;
   let i = messages.length - max;
   while (i < messages.length && !(messages[i].role === 'user' && typeof messages[i].content === 'string')) i++;
@@ -157,21 +158,55 @@ export class Mind {
     this.cost = 0;
     this.phase = 'there';
     this.brief = '';
+    this.notes = []; // changes since the last request, said to the mind as a system note
+    this.started = false;
   }
 
-  setScene({ phase = this.phase, brief = this.brief, extra = this.extra }) {
-    Object.assign(this, { phase, brief, extra });
+  // The system prompt is written once, at the first request, and never changes during the walk:
+  // the API ties the model's thinking to it, and a changed prompt makes every later request fail
+  // (and loses the cache). Anything that changes later (a re-planned route, the way back, what
+  // they like) is added to the conversation as a system note instead.
+  setScene({ phase, brief, extra }) {
+    if (!this.started) {
+      Object.assign(this, Object.fromEntries(Object.entries({ phase, brief, extra }).filter(([, v]) => v !== undefined)));
+      return;
+    }
+    const notes = [];
+    if (phase && phase !== this.phase) {
+      notes.push(phase === 'back' ? 'The way back has started: from now on follow the ON THE WAY BACK rules. They lead.' : 'You lead again.');
+      this.phase = phase;
+    }
+    if (brief && brief !== this.brief) {
+      notes.push(`THE ROUTE has changed. This replaces every earlier route completely:\n${brief}`);
+      this.brief = brief;
+    }
+    if (extra !== undefined && extra !== this.extra) {
+      if (extra) notes.push(extra);
+      this.extra = extra;
+    }
+    if (notes.length) this.notes.push(notes.join('\n\n'));
   }
 
   system() {
-    return [
-      { type: 'text', text: PERSONA },
-      {
-        type: 'text',
-        text: `${this.phase === 'back' ? WAY_BACK : WAY_THERE}\n\nTHE ROUTE\n${this.brief}${this.extra ? `\n\n${this.extra}` : ''}`,
-        cache_control: { type: 'ephemeral' },
-      },
-    ];
+    if (!this.started) {
+      this.started = true;
+      this.frozen = [
+        { type: 'text', text: PERSONA },
+        {
+          type: 'text',
+          text: `${WAY_THERE}\n\n${WAY_BACK}\n\nLater system notes in the conversation replace THE ROUTE when it changes, and say when the way back starts.\n\nTHE ROUTE\n${this.brief}${this.extra ? `\n\n${this.extra}` : ''}`,
+          cache_control: { type: 'ephemeral' },
+        },
+      ];
+    }
+    return this.frozen;
+  }
+
+  // Changes since the last request go in right after the walker's (or the tool's) message.
+  addNotes(messages) {
+    if (this.notes.length && messages.at(-1)?.role === 'user') {
+      messages.push({ role: 'system', content: this.notes.splice(0).join('\n\n') });
+    }
   }
 
   params(messages) {
@@ -199,7 +234,9 @@ export class Mind {
   // passed on once the next one has begun (or the reply has ended), so text written right before
   // a tool call (the model thinking aloud) is never said.
   async stream(messages, signal, onSentence) {
-    const stream = this.client.beta.messages.stream(this.params(messages), { signal });
+    const params = this.params(messages); // writes the system prompt once
+    this.addNotes(messages);
+    const stream = this.client.beta.messages.stream({ ...params, messages }, { signal });
     let text = '', given = 0, toolSeen = false;
     const pass = (upTo) => {
       const chunk = text.slice(given, upTo).trim();
