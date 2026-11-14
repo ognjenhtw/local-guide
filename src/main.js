@@ -32,7 +32,25 @@ function fillOptions(select, values, chosen) {
   if (values.includes(chosen)) select.value = chosen;
 }
 
+// One-time phone setup from a QR code: the link ends in #setup=<base64url of {"claude","openai"}>.
+// The part after # is never sent to the web server, and it's removed from the address at once.
+function applySetupLink() {
+  const m = location.hash.match(/^#setup=([A-Za-z0-9_-]+)$/);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  try {
+    const keys = JSON.parse(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')));
+    if (keys.claude) store.set('claudeKey', keys.claude.trim());
+    if (keys.openai) store.set('openaiKey', keys.openai.trim());
+    log('keys saved from the setup link');
+    setTimeout(() => alert('Keys saved on this device. You can close the QR code.'), 300);
+  } catch {
+    log('the setup link could not be read');
+  }
+}
+
 function setupSettings() {
+  applySetupLink();
   fillOptions($('model'), voiceInfo.models, store.get('model.openai'));
   fillOptions($('voice'), voiceInfo.voices, store.get('voice.openai'));
   fillOptions($('brain-model'), MIND_MODELS, store.get('brainModel.claude'));
