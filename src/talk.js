@@ -4,6 +4,19 @@
 // - If the walker keeps talking while the mind is still thinking, that answer is dropped and
 //   everything they said is answered together.
 // - If the walker starts talking while the guide speaks, the guide stops (barge-in).
+// What went wrong with a request to Claude, in plain words.
+export function explain(err) {
+  const s = err.status, m = String(err.message || '');
+  if (s === 401) return 'the Claude API key was not accepted. Paste it again in Settings.';
+  if (s === 403) return 'this Claude API key is not allowed to use this model.';
+  if (s === 400 && /credit|balance|billing/i.test(m)) return 'the Claude account has no credit left.';
+  if (s === 404) return 'this Claude model was not found. Pick another one in Settings.';
+  if (s === 429) return 'too many requests to Claude right now. Wait a moment.';
+  if (s >= 500) return 'Claude is busy or down right now. Try again in a minute.';
+  if (!s) return "the phone can't reach Claude (no internet, a VPN, or an ad/content blocker blocking api.anthropic.com).";
+  return 'Claude refused the request.';
+}
+
 export class Talk {
   constructor({ voice, mind, context = () => ({}), onLine = () => {}, onNote = () => {}, log = () => {} }) {
     Object.assign(this, { voice, mind, context, onLine, onNote, log });
@@ -109,7 +122,7 @@ export class Talk {
         this.events.unshift(...events);
       } else {
         this.log('mind failed', `${err.status || ''} ${err.message}`);
-        this.onNote(`(the guide couldn't answer: ${err.status || ''} ${err.message})`);
+        this.onNote(`The guide couldn't answer: ${explain(err)} [${err.status || 'no status'}: ${String(err.message).slice(0, 160)}]`);
         // Only when they actually said something does it ask them to repeat it; otherwise it stays quiet.
         if (utter) (await utter).end(); else if (heard.length) await this.speak("Sorry, I didn't catch that. Say it again?");
       }

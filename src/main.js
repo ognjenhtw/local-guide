@@ -233,6 +233,7 @@ function pastOpeners() {
 // The walk is set up as soon as the route is shown: the guide writes its opener while the
 // walker is still looking at the route. It only speaks once they tap Start.
 function prepareWalk() {
+  $('guide-check').hidden = true;
   if (!settings.claudeKey()) return;
   const p = getProfile(profile());
   const lineVoice = { say: line => voice.say(line), utterance: () => voice.utterance(), cut: () => voice?.cut() }; // the real voice connects on Start
@@ -246,7 +247,8 @@ function prepareWalk() {
     },
     log: (type, data) => { log(type, data ?? ''); walkLog?.add('event', { what: type, data }); },
     onLine: text => addLine('guide', text),
-    onNote: text => addLine('note', text),
+    // Before Start (the opener is written while the route is shown) a problem shows by the Start button.
+    onNote: text => { addLine('note', text); if (walk !== prepared) { $('guide-check').textContent = text; $('guide-check').hidden = false; } },
     onRoute: r => { showRouteOnMap(r.line); walkLog?.add('route', { m: r.distance, turns: r.decisions.length }); },
     onPhase: ph => { showPhase(ph); addLine('note', '— heading back —'); walkLog?.add('phase', { phase: ph }); },
   });

@@ -50,3 +50,5 @@ button.small { padding: 6px 10px; font-size: 14px; margin: 0; }
 #walk-view .note, #transcript .note { color: var(--muted); text-align: center; }
 #map { height: 260px; border-radius: 10px; margin: 8px 0; }
 #log { font-size: 12px; white-space: pre-wrap; color: var(--muted); max-height: 40vh; overflow: auto; }
+
+.warning { color: #b42318; font-weight: 600; }
