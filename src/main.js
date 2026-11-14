@@ -118,16 +118,40 @@ function setupProfile() {
 // Where the walker is right now. Never a made-up place: if the phone can't tell, it says why.
 // Indoors a precise fix can take long, so after 12 s a rougher one (Wi-Fi) is fine: the guide
 // checks the start with the walker anyway.
-const BLOCKED = "Location is blocked for this site. On iPhone: Settings → Privacy & Security → Location Services → Safari Websites → While Using the App. Then reload this page and tap Allow.";
+// Which browser the page is running in (a link opened from the Camera goes to the default browser,
+// which may not be the Safari the walker normally uses).
+function browserName() {
+  const ua = navigator.userAgent;
+  if (/CriOS/.test(ua)) return 'Chrome';
+  if (/FxiOS/.test(ua)) return 'Firefox';
+  if (/EdgiOS/.test(ua)) return 'Edge';
+  if (/(FBAN|FBAV|Instagram|KAKAOTALK|Line|NAVER|Whale)/i.test(ua)) return 'an app\'s built-in browser';
+  if (/iPhone|iPad/.test(ua) && /Safari/.test(ua)) return 'Safari';
+  return 'this browser';
+}
+
+// Location was refused without the walker being asked: say exactly where to switch it on.
+async function blockedMessage(e) {
+  let state = 'unknown';
+  try { state = (await navigator.permissions.query({ name: 'geolocation' })).state; } catch { /* not supported */ }
+  const b = browserName();
+  const where = b === 'Safari'
+    ? 'Safari has location blocked for this website. Tap "aA" (left of the address) → Website Settings → Location → Allow, then reload.'
+    : b === 'Chrome' || b === 'Firefox' || b === 'Edge'
+      ? `This page is open in ${b}, not Safari. Either allow location for ${b} (iPhone Settings → ${b} → Location → While Using the App) and reload, or open ognjenhtw.github.io/local-guide in Safari. Keys from the QR code are only saved in the browser that opened it.`
+      : `This page is open in ${b}. Open ognjenhtw.github.io/local-guide in Safari instead.`;
+  return `${where} [${b}, location permission: ${state}, error ${e.code}: ${e.message}]`;
+}
 function currentPosition() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error("This browser can't give a location."));
     const ok = p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy, label: 'the starting point' });
     navigator.geolocation.getCurrentPosition(ok, e => {
-      if (e.code === 1) return reject(new Error(BLOCKED));
+      if (e.code === 1) return blockedMessage(e).then(m => reject(new Error(m)));
       log('precise location not ready:', e.message, '- trying a rougher one');
       navigator.geolocation.getCurrentPosition(ok,
-        e2 => reject(new Error(e2.code === 1 ? BLOCKED : `The phone couldn't find where you are (${e2.message}). Try again near a window or outside.`)),
+        e2 => e2.code === 1 ? blockedMessage(e2).then(m => reject(new Error(m)))
+          : reject(new Error(`The phone couldn't find where you are (${e2.message}). Try again near a window or outside.`)),
         { enableHighAccuracy: false, timeout: 15000, maximumAge: 120000 });
     }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
   });
