@@ -7,8 +7,6 @@ import { Walk } from './walk.js';
 import { profileNames, getProfile, saveLandmark, saveInterest, WalkLog, exportWalks, walksOf, deleteWalk, transcriptOf } from './profile.js';
 import { showPosition, showRoute as showRouteOnMap } from './debugmap.js';
 
-// Used when the device can't give a GPS fix (e.g. testing on a laptop).
-const FALLBACK_START = { lat: 37.5568, lng: 126.9237, accuracy: 500, label: 'Hongik Univ. Station (test start)' };
 
 const $ = id => document.getElementById(id);
 const store = {
@@ -117,25 +115,45 @@ function setupProfile() {
 
 // --- Search and route ----------------------------------------------------------------
 
+// Where the walker is right now. Never a made-up place: if the phone can't tell, it says why.
+// Indoors a precise fix can take long, so after 12 s a rougher one (Wi-Fi) is fine: the guide
+// checks the start with the walker anyway.
+const BLOCKED = "Location is blocked for this site. On iPhone: Settings → Privacy & Security → Location Services → Safari Websites → While Using the App. Then reload this page and tap Allow.";
 function currentPosition() {
-  return new Promise(resolve => {
-    if (!navigator.geolocation) return resolve(FALLBACK_START);
-    navigator.geolocation.getCurrentPosition(
-      p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy, label: 'the starting point' }),
-      e => { log('GPS unavailable:', e.message); resolve(FALLBACK_START); },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
-    );
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error("This browser can't give a location."));
+    const ok = p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy, label: 'the starting point' });
+    navigator.geolocation.getCurrentPosition(ok, e => {
+      if (e.code === 1) return reject(new Error(BLOCKED));
+      log('precise location not ready:', e.message, '- trying a rougher one');
+      navigator.geolocation.getCurrentPosition(ok,
+        e2 => reject(new Error(e2.code === 1 ? BLOCKED : `The phone couldn't find where you are (${e2.message}). Try again near a window or outside.`)),
+        { enableHighAccuracy: false, timeout: 15000, maximumAge: 120000 });
+    }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
   });
 }
 
-let start = FALLBACK_START;
+let start = null;
 
 async function onSearch(e) {
   e.preventDefault();
   const q = $('search-input').value.trim();
   if (!q) return;
-  start = await currentPosition();
-  log('start:', start.label, start.lat.toFixed(5), start.lng.toFixed(5), `±${Math.round(start.accuracy || 0)} m`);
+  const ul0 = $('results');
+  ul0.innerHTML = '<li class="muted">Finding where you are…</li>';
+  try {
+    start = await currentPosition();
+  } catch (err) {
+    start = null;
+    log('no location:', err.message);
+    ul0.innerHTML = '';
+    const li = document.createElement('li');
+    li.className = 'warning';
+    li.textContent = err.message;
+    ul0.appendChild(li);
+    return;
+  }
+  log('start:', start.lat.toFixed(5), start.lng.toFixed(5), `±${Math.round(start.accuracy || 0)} m`);
   const results = await searchPlaces(q, start);
   log(`search "${q}": ${results.length} results`);
   const ul = $('results');
