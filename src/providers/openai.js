@@ -11,15 +11,16 @@ const PRICES = {
 };
 const TRANSCRIBE_PER_MIN = 0.003; // gpt-4o-mini-transcribe
 
-// Measured 2026-11-14: with this, the mini voice read 5/5 lines exactly, first sound in ~0.6-0.8 s.
+// Measured 2026-11-14: with this, the mini voice read 5/5 lines exactly, first sound in ~0.4-0.8 s.
 const READ = line => `You are the voice of Local, a relaxed, warm friend in their late twenties on the phone. Say the line below out loud, word for word, exactly as written: nothing before it, nothing after it, no changes. Sound natural and easy-going, like you mean it; smile where it's funny.\n\nLINE: ${line}`;
 
 export class OpenAIVoice {
-  constructor({ apiKey, model, voice, onSpeechStart = () => {}, onSpeechStop = () => {}, onUtterance = () => {}, onCost = () => {} }) {
-    Object.assign(this, { apiKey, model, voice, onSpeechStart, onSpeechStop, onUtterance, onCost });
+  constructor({ apiKey, model, voice, onSpeechStart = () => {}, onSpeechStop = () => {}, onUtterance = () => {}, onPlaying = () => {}, onCost = () => {} }) {
+    Object.assign(this, { apiKey, model, voice, onSpeechStart, onSpeechStop, onUtterance, onPlaying, onCost });
     this.cost = 0;
-    this.current = null; // the line being said: { id, done, started }
-    this.queue = Promise.resolve();
+    this.utt = null; // what's being said now
+    this.generating = null; // the sentence the server is generating: { line, id }
+    this.playing = false;
     this.ready = new Promise(resolve => { this.markReady = resolve; }); // lines wait for the connection
   }
 
@@ -86,7 +87,7 @@ export class OpenAIVoice {
           noise_reduction: { type: 'near_field' }, // earbud mic close to the mouth
           // The app decides when to answer (create_response: false) and cuts the voice itself
           // when the walker starts talking (interrupt_response: false + cut()).
-          turn_detection: { type: 'server_vad', threshold: 0.6, silence_duration_ms: 550, create_response: false, interrupt_response: false },
+          turn_detection: { type: 'server_vad', threshold: 0.6, silence_duration_ms: 350, create_response: false, interrupt_response: false },
         },
         output: { voice: this.voice },
       },
@@ -98,7 +99,7 @@ export class OpenAIVoice {
   }
 
   onEvent(ev) {
-    const cur = this.current;
+    const gen = this.generating;
     switch (ev.type) {
       case 'input_audio_buffer.speech_started':
         this.onSpeechStart();
@@ -106,70 +107,114 @@ export class OpenAIVoice {
       case 'input_audio_buffer.speech_stopped':
         this.onSpeechStop();
         break;
-      case 'conversation.item.input_audio_transcription.failed':
-        this.onUtterance('');
-        break;
       case 'conversation.item.input_audio_transcription.completed':
         this.onUtterance(ev.transcript || '');
         break;
+      case 'conversation.item.input_audio_transcription.failed':
+        this.onUtterance('');
+        break;
       case 'response.created':
-        if (cur && !cur.id) cur.id = ev.response.id;
+        if (gen && !gen.id) {
+          gen.id = ev.response.id;
+          if (gen.cancel) this.send({ type: 'response.cancel', response_id: gen.id }); // cut before it began
+        }
         break;
       case 'output_audio_buffer.started':
-        if (cur && ev.response_id === cur.id) cur.started = true;
+        this.playing = true;
+        clearTimeout(this.drainTimer);
+        if (!this.playedOnce) { this.playedOnce = true; this.onPlaying(); }
         break;
       case 'output_audio_buffer.stopped':
       case 'output_audio_buffer.cleared':
-        if (cur && ev.response_id === cur.id) cur.done({ cut: ev.type === 'output_audio_buffer.cleared' });
+        this.playing = false;
+        this.settle();
         break;
       case 'response.output_audio_transcript.done':
-        if (cur && ev.response_id === cur.id) cur.said = ev.transcript;
+        if (gen && ev.response_id === gen.id && ev.transcript?.trim() !== gen.line.trim()) log('voice said differently:', ev.transcript);
         break;
       case 'response.done':
         this.addCost(ev.response?.usage);
-        if (cur && ev.response?.id === cur.id) {
-          clearTimeout(cur.fallback);
-          if (ev.response.status !== 'completed') cur.done({ cut: true });
-          // Audio events missing for some reason: don't hang the conversation.
-          else cur.fallback = setTimeout(() => cur.done({}), cur.started ? 30000 : 2500);
+        if (gen && ev.response?.id === gen.id) {
+          clearTimeout(this.genTimer);
+          this.generating = null;
+          this.pump(); // the next sentence is generated while this one plays
+          this.settle();
         }
         break;
       case 'error':
         log('voice error:', ev.error?.message || ev);
-        if (cur && !cur.id) cur.done({ error: true });
+        if (gen && !gen.id) { clearTimeout(this.genTimer); this.generating = null; this.pump(); this.settle(); }
         break;
     }
   }
 
-  // Say one line, word for word. Resolves when it has been played (or was cut off).
+  // One thing the guide says, added sentence by sentence while the mind is still writing it.
+  // Each sentence goes to the voice as soon as the previous one has been generated (well before
+  // it has been played); the server then plays them back to back. Measured 2026-11-14 over
+  // WebRTC: a natural ~0.4 s pause between sentences, no overlap.
+  utterance() {
+    if (this.utt && !this.utt.finished) this.finish(this.utt, { replaced: true });
+    const u = { queue: [], ended: false, finished: false };
+    u.done = new Promise(resolve => { u.resolve = resolve; });
+    u.add = line => { if (!u.finished && line.trim()) { u.queue.push(line.trim()); this.pump(); } };
+    u.end = () => { u.ended = true; this.settle(); return u.done; };
+    this.utt = u;
+    this.playedOnce = false;
+    return u;
+  }
+
+  // Say one line (all at once).
   say(line) {
-    const run = async () => { await this.ready; return new Promise(resolve => {
-      const cur = { id: null, started: false };
-      // Nothing back from the server at all: give up on this line rather than hang.
-      cur.fallback = setTimeout(() => { if (!cur.id) { log('voice: no response to a line'); cur.done({ error: true }); } }, 6000);
-      cur.done = r => {
-        if (this.current !== cur) return;
-        clearTimeout(cur.fallback);
-        this.current = null;
-        if (cur.said && cur.said.trim() !== line.trim()) log('voice said differently:', cur.said);
-        resolve(r);
-      };
-      this.current = cur;
-      // Out of band: the line isn't added to the voice's own conversation (it has no use for one),
-      // so each line costs only itself.
-      this.send({ type: 'response.create', response: { conversation: 'none', output_modalities: ['audio'], instructions: READ(line), input: [], tool_choice: 'none' } });
-    }); };
-    this.queue = this.queue.then(run, run);
-    return this.queue;
+    const u = this.utterance();
+    u.add(line);
+    return u.end();
+  }
+
+  async pump() {
+    await this.ready;
+    const u = this.utt;
+    if (!u || u.finished || this.generating || !u.queue.length) return;
+    const line = u.queue.shift();
+    this.generating = { line, id: null };
+    // Nothing back from the server at all: skip this sentence rather than hang.
+    this.genTimer = setTimeout(() => {
+      if (this.generating?.line === line && !this.generating.id) { log('voice: no response to a line'); this.generating = null; this.pump(); this.settle(); }
+    }, 6000);
+    // Out of band: the line isn't added to the voice's own conversation (it has no use for
+    // one), so each line costs only itself.
+    this.send({ type: 'response.create', response: { conversation: 'none', output_modalities: ['audio'], instructions: READ(line), input: [], tool_choice: 'none' } });
+  }
+
+  // The utterance is over once everything is generated and the audio has finished playing.
+  settle() {
+    const u = this.utt;
+    if (!u || u.finished || !u.ended || u.queue.length || this.generating) return;
+    if (!this.playing) {
+      // Audio may still be about to start: give it a moment before calling it done.
+      clearTimeout(this.drainTimer);
+      this.drainTimer = setTimeout(() => { if (!this.playing && this.utt === u) this.finish(u, {}); }, 1200);
+    } else {
+      clearTimeout(this.drainTimer);
+      this.drainTimer = setTimeout(() => this.finish(u, {}), 40000); // never hang on a missing event
+    }
+  }
+
+  finish(u, result) {
+    if (u.finished) return;
+    u.finished = true;
+    clearTimeout(this.drainTimer);
+    if (this.utt === u) this.utt = null;
+    u.resolve(result);
   }
 
   // Stop talking now (the walker started speaking).
   cut() {
-    const cur = this.current;
-    if (!cur) return;
-    if (cur.id) this.send({ type: 'response.cancel', response_id: cur.id });
+    const u = this.utt;
+    if (u) u.queue = [];
+    const gen = this.generating;
+    if (gen) { if (gen.id) this.send({ type: 'response.cancel', response_id: gen.id }); else gen.cancel = true; }
     this.send({ type: 'output_audio_buffer.clear' });
-    cur.done({ cut: true });
+    if (u) this.finish(u, { cut: true });
   }
 
   addCost(u) {

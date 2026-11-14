@@ -25,10 +25,10 @@ const ACTIONS = {
   // TMAP's crosswalk codes say where the crosswalk is: "on your left" = turn left onto it and cross.
   // It never means "cross, then turn left"; after crossing they carry straight on.
   crosswalk: 'cross at the crosswalk straight ahead',
-  'crosswalk, then left': 'turn left onto the crosswalk and cross the street',
-  'crosswalk, then right': 'turn right onto the crosswalk and cross the street',
-  "crosswalk (2 o'clock)": 'bear right onto the crosswalk and cross', "crosswalk (10 o'clock)": 'bear left onto the crosswalk and cross',
-  "crosswalk (4 o'clock)": 'turn sharp right onto the crosswalk and cross', "crosswalk (8 o'clock)": 'turn sharp left onto the crosswalk and cross',
+  'crosswalk, then left': 'go LEFT: turn left onto the crosswalk and cross the street (say "left")',
+  'crosswalk, then right': 'go RIGHT: turn right onto the crosswalk and cross the street (say "right")',
+  "crosswalk (2 o'clock)": 'bear RIGHT onto the crosswalk and cross', "crosswalk (10 o'clock)": 'bear LEFT onto the crosswalk and cross',
+  "crosswalk (4 o'clock)": 'turn sharp RIGHT onto the crosswalk and cross', "crosswalk (8 o'clock)": 'turn sharp LEFT onto the crosswalk and cross',
   stairs: 'take the stairs', overpass: 'take the footbridge', underpass: 'take the underpass',
 };
 

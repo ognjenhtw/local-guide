@@ -202,7 +202,8 @@ function makeVoice() {
   return createVoice({
     apiKey: settings.openaiKey(), model: settings.model(), voice: settings.voice(),
     onSpeechStart: () => walk?.talk.walkerStarted(),
-    onSpeechStop: () => walk?.talk.walkerStopped(),
+    onSpeechStop: () => { walkLog?.add('event', { what: 'walker stopped' }); walk?.talk.walkerStopped(); },
+    onPlaying: () => walkLog?.add('event', { what: 'voice playing' }), // with 'walker stopped': the reply delay
     onUtterance: text => {
       // Lone noises ("uh", a stray syllable) aren't shown or answered.
       if (text.replace(/[^\p{L}\p{N}]/gu, '').length >= 2) { addLine('walker', text.trim()); walkLog.add('heard', { text }); }
@@ -234,7 +235,7 @@ function pastOpeners() {
 function prepareWalk() {
   if (!settings.claudeKey()) return;
   const p = getProfile(profile());
-  const lineVoice = { say: line => voice.say(line), cut: () => voice?.cut() }; // the real voice connects on Start
+  const lineVoice = { say: line => voice.say(line), utterance: () => voice.utterance(), cut: () => voice?.cut() }; // the real voice connects on Start
   prepared = new Walk({
     voice: lineVoice, apiKey: settings.claudeKey(), model: settings.mindModel(), start, route,
     profile: { likes: p.likes || [] },
@@ -273,6 +274,7 @@ async function startWalk() {
   showPhase('there');
   await voice.start(); // inside the tap, so iOS allows the microphone and audio
   walk.talk.release(); // the opener (written already) plays now
+  walk.live();
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
 
   watchId = navigator.geolocation?.watchPosition(g => {
@@ -298,6 +300,7 @@ function stopWalk() {
   wakeLock?.release?.();
   walkLog?.add('end', { cost_usd: voice && walk ? +(voice.totalCost() + walk.mind.cost).toFixed(4) : null });
   walkLog?.save();
+  walk?.close();
   walk = null;
   $('walk-section').hidden = true;
   $('route-section').hidden = false;

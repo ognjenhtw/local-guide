@@ -54,8 +54,8 @@ export class Talk {
       this.timer = setTimeout(() => { this.awaiting = 0; this.kick(); }, 4000);
       return;
     }
-    // A short pause first: speech-to-text often splits one sentence into two.
-    this.timer = setTimeout(() => this.run(), this.heard.length ? 250 : 0);
+    // They have stopped and everything they said is transcribed: answer now.
+    this.timer = setTimeout(() => this.run(), 0);
   }
 
   async run() {
@@ -65,25 +65,41 @@ export class Talk {
     const ctrl = new AbortController();
     this.abort = () => ctrl.abort();
     this.abortable = true;
+    // The guide starts speaking on the first sentence while the mind writes the rest.
+    let utter = null;
+    const t0 = Date.now();
+    const onSentence = sentence => {
+      this.abortable = false; // it's being said: from here on the walker can only cut it off
+      if (!utter) {
+        this.state = 'speaking';
+        utter = this.gate.then(() => { this.log('first sentence', { ms: Date.now() - t0 }); return this.voice.utterance(); });
+      }
+      utter.then(u => u.add(sentence));
+    };
     try {
       const ctx = await this.context({ heard: heard.length > 0 });
       // History stays append-only (thinking blocks must not be edited), so a cut-off line is noted now.
       if (this.cutOff) { events.unshift({ text: 'Your last line got cut off: they started talking over you.' }); this.cutOff = false; }
       const { say, ms } = await this.mind.turn({
-        heard, events: events.map(e => e.text), ...ctx, signal: ctrl.signal,
+        heard, events: events.map(e => e.text), ...ctx, signal: ctrl.signal, onSentence,
         onToolStart: () => { this.abortable = false; },
       });
       this.log('mind', { ms, heard, events: events.map(e => e.text), say });
-      if (say && !this.listening) await this.speak(say);
-      else if (say) this.log('dropped (walker talking)', say);
+      if (utter) {
+        const u = await utter;
+        this.onLine(say);
+        const r = await u.end();
+        this.log('spoke', { ms: Date.now() - t0, cut: !!r?.cut });
+        if (r?.cut) this.cutOff = true;
+      }
     } catch (err) {
-      if (ctrl.signal.aborted) {
+      if (ctrl.signal.aborted && !utter) {
         // They kept talking: answer it all together once they stop.
         this.heard.unshift(...heard);
         this.events.unshift(...events);
       } else {
         this.log('mind failed', err.message);
-        await this.speak("Ugh, my phone glitched for a sec. Say that again?");
+        if (utter) (await utter).end(); else await this.speak("Ugh, my phone glitched for a sec. Say that again?");
       }
     } finally {
       this.state = 'idle';
@@ -92,13 +108,12 @@ export class Talk {
     }
   }
 
+  // A whole line at once (the fallback when the mind fails).
   async speak(line) {
     this.state = 'speaking';
     await this.gate;
     this.onLine(line);
-    const t0 = Date.now();
     const r = await this.voice.say(line);
-    this.log('spoke', { ms: Date.now() - t0, cut: !!r?.cut, error: !!r?.error });
     if (r?.cut) this.cutOff = true;
   }
 }

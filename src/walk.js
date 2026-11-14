@@ -31,6 +31,7 @@ export class Walk {
   // The walk starts: the opener, nothing else.
   begin(startFix, pastOpeners = []) {
     this.nav.update(startFix);
+    this.refreshAround();
     // They start right at the first turn: the first direction comes in the conversation.
     if ((this.nav.route.startLeg?.distance ?? 0) < 40) this.announced.add(0);
     const dest = this.nav.route.dest;
@@ -66,14 +67,24 @@ export class Walk {
     return { status: this.nav.status(this.phase), around: heard ? await this.around() : '' };
   }
 
+  // What's around them, kept fresh in the background as they move, so nobody waits for it.
   async around() {
     const pos = this.nav.pos;
     if (this.aroundCache && distance(this.aroundCache.pos, pos) < 25) return this.aroundCache.text;
-    const places = await this.deps.placesNear(pos, 80, this.deps.surroundingTypes, 15).catch(() => []);
-    const mine = this.nav.personal.filter(m => distance(pos, m) < 80).map(m => `- their own landmark "${m.label}", ${Math.round(distance(pos, m))} m ${compass(bearing(pos, m))}`);
-    const text = [...places.map(p => `- ${placeText(p)}, ${Math.round(distance(pos, p))} m ${compass(bearing(pos, p))}`), ...mine].join('\n') || '(nothing listed)';
-    this.aroundCache = { pos, text };
-    return text;
+    return this.refreshAround();
+  }
+
+  refreshAround() {
+    const pos = this.nav.pos;
+    if (this.aroundLoading && distance(this.aroundLoading.pos, pos) < 25) return this.aroundLoading.promise;
+    const promise = this.deps.placesNear(pos, 80, this.deps.surroundingTypes, 15).catch(() => []).then(places => {
+      const mine = this.nav.personal.filter(m => distance(pos, m) < 80).map(m => `- their own landmark "${m.label}", ${Math.round(distance(pos, m))} m ${compass(bearing(pos, m))}`);
+      const text = [...places.map(p => `- ${placeText(p)}, ${Math.round(distance(pos, p))} m ${compass(bearing(pos, p))}`), ...mine].join('\n') || '(nothing listed)';
+      this.aroundCache = { pos, text };
+      return text;
+    });
+    this.aroundLoading = { pos, promise };
+    return promise;
   }
 
   // --- Tools the mind can call -----------------------------------------------------------------
@@ -94,6 +105,7 @@ export class Walk {
         this.lastFix = Date.now();
         this.offCount = 0;
         this.aroundCache = null;
+        this.aroundLoading = null;
         const fresh = await this.deps.buildRoute(this.nav.pos, this.nav.route.dest, { quick: true, personal: this.nav.personal, likes: this.profile.likes });
         this.setRoute(fresh);
         this.log('located', { place: p.name, moved_m: moved, facing: spot?.facing ?? null });
@@ -135,6 +147,7 @@ export class Walk {
   async position(raw) {
     const nav = this.nav;
     nav.update(raw);
+    if (!this.aroundCache || distance(this.aroundCache.pos, nav.pos) >= 25) this.refreshAround();
     const acc = nav.pos.accuracy;
     if (nav.arrived()) {
       if (!this.arrivedSaid) {
@@ -170,6 +183,15 @@ export class Walk {
         this.talk.event("They're heading away from the way back.", 'off');
       }
     }
+  }
+
+  // Once the walk is really on: keep the guide's prompt cached through quiet stretches.
+  live() {
+    this.warmTimer = setInterval(() => { if (this.talk.state === 'idle') this.mind.keepWarm(); }, 30000);
+  }
+
+  close() {
+    clearInterval(this.warmTimer);
   }
 
   // The turnover: a fresh route back to the start, and the mind switches roles.

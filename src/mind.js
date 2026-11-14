@@ -19,6 +19,10 @@ const PRICES = {
 };
 
 export const QUIET = '<quiet>';
+// A sentence end followed by the start of the next sentence.
+const SENTENCE_END = /[.!?…]+["')\]]*\s+(?=\S)/;
+// Never spoken: the model talking about the walker or the app instead of to the walker.
+const META = /\b(the walker|around[- ]them|locate|tool call|THE ROUTE)\b|\[(status|app)\]/i;
 
 const PERSONA = `You are Local. You're on the phone with your close friend while they walk somewhere in Seoul, and you're the one who knows the way. Everything you write is spoken out loud straight into their earbuds, so write exactly what you'd say, nothing else.
 
@@ -38,8 +42,8 @@ Giving directions (this matters most; a wrong direction is the worst thing you c
 - Say it the way a local would: by landmarks and the shape of the streets. "cross the big road right here", "straight down to the little rotary", "left there and all the way down to Jongno", "past the pharmacy", "it's a few doors down on your right". Never distances in numbers. For how far: "right here", "just a bit further", "a minute or two", "all the way down to …".
 - Places: chains by brand (7-Eleven, Paik's Coffee); everything else by what it is, in plain English (a pharmacy, a little chicken place, a motorbike shop, a bakery). Never say a Korean word, or a Korean or romanized name of a shop, building or street. Big roads and areas everyone knows (Jongno, Yulgok-ro, Dongdaemun) are fine.
 - One chunk at a time: what to do now up to the next turn, plus one thing they'll see so they know they're right. The whole way only if they ask for it ("how do I get there?"): then in one easy breath, about 40 words at most, landmarks only where they help. On a route with many little turns, give the first part and say you'll call out the rest as they go.
-- Every turn you mention comes with its direction (left, right, straight across). The only exception is a crosswalk right where they start, which is just "the crosswalk right by you". Leaving out a direction is as bad as a wrong one.
-- Answer exactly what they asked, first. If they mention something (a rotary, a big road, a shop), say what it means for them: do they turn there, go past it, or is it not on the way.
+- Every turn you mention comes with its direction, left or right, and that includes turning onto a crosswalk: "left across the crosswalk at the rotary", never just "cross there". Leaving out a direction is as bad as a wrong one. The one and only exception is the crosswalk right where they start (turn 1, when THE ROUTE says so), which is just "the crosswalk right by you".
+- Answer exactly what they asked, and answer it in your first few words ("You turn left there.", "Yeah, just the one."), then the rest. If they mention something (a rotary, a big road, a shop), say what it means for them: do they turn there, go past it, or is it not on the way.
 - If you don't know something, don't say so. Say what you do know that helps: what they'll reach next and what to do there.
 - If they ask the same thing again, your last answer didn't land: say it differently and more concretely, with a landmark.
 - Safety: say where to cross, never when. You can't see lights or cars: never say it's safe, never tell them to go now.
@@ -162,8 +166,8 @@ export class Mind {
     ];
   }
 
-  async create(messages, signal) {
-    const res = await this.client.beta.messages.create({
+  params(messages) {
+    return {
       model: this.model,
       max_tokens: 400, // short spoken lines; a whole-way answer fits easily
       ...SPEED[this.model],
@@ -173,17 +177,77 @@ export class Mind {
       system: this.system(),
       tools: TOOLS,
       messages,
-    }, { signal });
-    const u = res.usage || {}, p = PRICES[this.model] || PRICES['claude-sonnet-5-5'];
+    };
+  }
+
+  addCost(u = {}) {
+    const p = PRICES[this.model] || PRICES['claude-sonnet-5-5'];
     this.cost += ((u.input_tokens || 0) * p[0] + (u.output_tokens || 0) * p[1]
       + (u.cache_read_input_tokens || 0) * p[2] + (u.cache_creation_input_tokens || 0) * p[3]) / 1e6;
+  }
+
+  // One request, streamed. Finished sentences go to `onSentence` straight away, so the voice
+  // starts on the first sentence while the rest is still being written. A sentence is only
+  // passed on once the next one has begun (or the reply has ended), so text written right before
+  // a tool call (the model thinking aloud) is never said.
+  async stream(messages, signal, onSentence) {
+    const stream = this.client.beta.messages.stream(this.params(messages), { signal });
+    let text = '', given = 0, toolSeen = false;
+    const pass = (upTo) => {
+      const chunk = text.slice(given, upTo).trim();
+      given = upTo;
+      if (chunk && !chunk.includes(QUIET) && !META.test(chunk)) onSentence?.(chunk);
+      else if (chunk) this.log('mind aside (not said)', chunk);
+    };
+    const t0 = Date.now(), at = {};
+    this.lastCall = t0;
+    for await (const ev of stream) {
+      if (!at.firstByte) at.firstByte = Date.now() - t0;
+      if (ev.type === 'content_block_start' && !at[ev.content_block.type]) at[ev.content_block.type] = Date.now() - t0;
+      if (ev.type === 'content_block_start' && ev.content_block.type === 'tool_use') toolSeen = true;
+      if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta' && !toolSeen) {
+        if (!at.firstWord) at.firstWord = Date.now() - t0;
+        text += ev.delta.text;
+        // Hand over every finished sentence whose next sentence has begun. A very short one
+        // ("Easy.") goes together with the next, so the voice never says a lone word.
+        for (let cut = 1; cut > 0;) {
+          cut = -1;
+          const rest = text.slice(given), re = new RegExp(SENTENCE_END.source, 'g');
+          for (let m; (m = re.exec(rest));) {
+            const end = m.index + m[0].length;
+            if (rest.slice(0, end).trim().length >= 12) { cut = end; break; }
+          }
+          if (cut > 0) pass(given + cut);
+        }
+      }
+    }
+    const res = await stream.finalMessage();
+    this.addCost(res.usage);
+    // Where the time goes: first byte (network + reading the prompt), thinking, first word, all.
+    this.log('mind call', { ms: { ...at, all: Date.now() - t0 }, usage: res.usage, stop: res.stop_reason });
+    const usedTool = res.content.some(b => b.type === 'tool_use');
+    if (!usedTool && res.stop_reason !== 'refusal') pass(text.length);
+    else if (text.slice(given).trim()) this.log('mind aside (not said)', text.slice(given).trim());
     return res;
   }
 
-  // One turn: what the walker said and/or what the app noticed, in; the line to say, out.
-  // `signal` can abort it until the first tool runs (the walker kept talking: everything gets
-  // answered together).
-  async turn({ heard = [], events = [], status = '', around = '', signal, onToolStart }) {
+  // The cached prompt expires after 5 minutes without a request; the next answer would then be
+  // ~0.3 s slower. During long quiet stretches of a walk, a zero-token request keeps it cached
+  // (it only reads the cache: ~$0.0007). Measured 2026-11-14: the connection itself stays warm.
+  keepWarm() {
+    if (Date.now() - (this.lastCall || 0) < 270000 || !this.history.length) return;
+    this.lastCall = Date.now();
+    const { betas, fallbacks, ...p } = this.params([...this.history, { role: 'user', content: '(still walking)' }]);
+    this.client.messages.create({ ...p, max_tokens: 0 })
+      .then(r => this.addCost(r.usage))
+      .catch(err => this.log('keep-warm failed', err.message));
+  }
+
+  // One turn: what the walker said and/or what the app noticed, in; the line, out (also given
+  // sentence by sentence to `onSentence` while it's written). `signal` can abort it until the
+  // first sentence is out or a tool runs (the walker kept talking: everything gets answered
+  // together).
+  async turn({ heard = [], events = [], status = '', around = '', signal, onToolStart, onSentence }) {
     const text = [
       status,
       ...events.map(e => `[app] ${e}`),
@@ -192,17 +256,14 @@ export class Mind {
     ].filter(Boolean).join('\n');
     const messages = [...this.history, { role: 'user', content: text }];
     const t0 = Date.now();
-    let say = '';
+    const said = [];
+    const give = s => { said.push(s); onSentence?.(s); };
     for (let round = 0; round < 4; round++) {
-      const res = await this.create(messages, round === 0 ? signal : undefined);
-      this.log('mind call', { round, usage: res.usage, stop: res.stop_reason });
+      const res = await this.stream(messages, round === 0 ? signal : undefined, give);
       messages.push({ role: 'assistant', content: res.content });
       if (res.stop_reason === 'refusal') { this.log('mind declined', res.stop_details); break; }
       const uses = res.content.filter(b => b.type === 'tool_use');
-      const words = res.content.filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
-      if (!uses.length) { say = words; break; }
-      // Text before a tool call is the model thinking aloud ("I'll locate it"): never said.
-      if (words) this.log('mind aside (not said)', words);
+      if (!uses.length) break;
       onToolStart?.();
       const results = await Promise.all(uses.map(async u => {
         let out;
@@ -213,8 +274,6 @@ export class Mind {
       messages.push({ role: 'user', content: results });
     }
     this.history = trim(messages);
-    const ms = Date.now() - t0;
-    return { say: say === QUIET ? '' : say.replaceAll(QUIET, '').trim(), ms };
+    return { say: said.join(' '), ms: Date.now() - t0 };
   }
-
 }
