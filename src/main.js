@@ -1,7 +1,7 @@
 import { log } from './log.js';
 import { loadKakao, placesNear, findNear, SURROUNDING_TYPES } from './kakao.js';
 import { destinationOptions, optionText } from './places.js';
-import { ensureMap, showMe, showOptions, highlight, showRouteLine, showMarkers, relayout } from './mapview.js';
+import { ensureMap, showMe, showOptions, highlight, showRouteLine, showMarkers, relayout, clearRoute, setMeVisible } from './mapview.js';
 import { savePhoto, photoURL, shrinkPhoto } from './photos.js';
 import { checkpointsOf, BRAND_COLORS } from './checkpoints.js';
 import { showView } from './streetview.js';
@@ -322,7 +322,18 @@ $('map-btn').onclick = () => {
   $('home-map').hidden = !open;
   $('map-btn').textContent = open ? 'Hide map' : 'Show map';
   if (open) relayout();
+  // The way back: only their own landmarks, and their position only if they ask for it.
+  const back = walk?.phase === 'back';
+  $('whereami-btn').hidden = !(open && back);
+  if (back) { setMeVisible(false); if (open) walk.back.mapOpens++; }
   walkLog?.add('event', { what: open ? 'map opened' : 'map closed', phase: walk?.phase || null, next_turn: walk?.nav ? walk.nav.next + 1 : null });
+};
+
+$('whereami-btn').onclick = () => {
+  setMeVisible(true);
+  $('whereami-btn').hidden = true;
+  if (walk?.back) walk.back.positionShown++;
+  walkLog?.add('event', { what: 'position shown on the map', phase: walk?.phase || null });
 };
 
 // --- Checkpoints: what each turn looks like ---------------------------------------------
@@ -445,7 +456,18 @@ function newWalk(withRoute) {
       if (walk?.phase === 'back') setCheckpoints(null);
       else if (walk && walk.nav?.route === r) { showRouteLine(r.line); setCheckpoints(r, walk.nav.next); }
     },
-    onPhase: ph => { showPhase(ph); addLine('note', '— heading back —'); walkLog?.add('phase', { phase: ph }); },
+    onPhase: ph => {
+      showPhase(ph);
+      addLine('note', '— heading back: you lead —');
+      walkLog?.add('phase', { phase: ph });
+      // Their own map only: no route, no position unless they ask, no checkpoints.
+      clearRoute();
+      setMeVisible(false);
+      foldMap();
+      $('back-btn').hidden = true;
+      $('route-section').hidden = true;
+    },
+    onHome: s => showSummary(s),
   });
 }
 
@@ -467,6 +489,7 @@ async function startWalk() {
   $('route-section').hidden = true;
   $('walk-section').hidden = false;
 
+  $('summary').hidden = true;
   walkLog = new WalkLog({ profile: profile(), provider: 'openai+claude', model: `${settings.model()} / ${settings.mindModel()}`, voice: settings.voice(), start, dest: route.dest });
   if (!prepared || prepared.route0 !== route) prepareWalk();
   walk = prepared;
@@ -492,6 +515,7 @@ async function startCall() {
   $('walk-section').hidden = false;
   $('talk-btn').hidden = true;
   $('back-btn').hidden = true; // no way back before there's a destination
+  $('summary').hidden = true;
   walkLog = new WalkLog({ profile: profile(), provider: 'openai+claude', model: `${settings.model()} / ${settings.mindModel()}`, voice: settings.voice(), start, dest: null });
   walk = newWalk(null);
   const same = preparedVoice && preparedVoice.model === settings.model() && preparedVoice.voice === settings.voice() && preparedVoice.apiKey === settings.openaiKey();
@@ -525,7 +549,17 @@ async function callStarted() {
 async function headBack() {
   if (!walk || walk.phase !== 'there') return;
   await walk.headBack();
-  walk.talk.event('They tapped "Head back": the way back starts now and they lead. Hand over in one short, casual line; no directions.');
+  walk.talk.event('They tapped "Head back": the way back starts now. They lead, you follow. Hand over in one light line of your own, no directions.');
+}
+
+// Back at the start: what the way back looked like, turn by turn.
+function showSummary(s) {
+  walkLog?.add('summary', s);
+  const row = t => `<li><b>${t.turn}</b><br><small>${t.outcome}${t.help ? ` · help: step ${t.help}` : ''}${t.wrongWay ? ` · wrong way ×${t.wrongWay}` : ''}</small></li>`;
+  $('summary').innerHTML = `<h2>Your way back</h2>
+    <p class="muted">${s.minutes} min · ${s.alone} of ${s.turns.length} turns on your own · ${s.helpSteps} help steps · ${s.wrongWays} wrong-way moments${s.detours ? ` · ${s.detours} detours` : ''} · map opened ${s.mapOpens}× · position shown ${s.positionShown}×${s.rescued ? ' · you asked me to lead' : ''}</p>
+    <ol>${s.turns.map(row).join('')}</ol>`;
+  $('summary').hidden = false;
 }
 
 function stopWalk() {
@@ -541,6 +575,8 @@ function stopWalk() {
   $('cp-check').hidden = true;
   $('home-map').hidden = false;
   $('map-btn').hidden = true;
+  $('whereami-btn').hidden = true;
+  setMeVisible(true);
   relayout();
   $('walk-section').hidden = true;
   $('route-section').hidden = false;

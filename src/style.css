@@ -82,3 +82,8 @@ button.pin.chosen { background: #1f6feb; color: #fff; transform: scale(1.25); }
 #cp-check { width: 100%; margin-top: 8px; }
 
 #map-btn { width: 100%; margin: 4px 0 8px; }
+
+#whereami-btn { width: 100%; margin: 4px 0 0; }
+#summary ol { padding-left: 0; }
+#summary li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+#summary small { color: var(--muted); }

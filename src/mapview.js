@@ -80,5 +80,13 @@ export function showRouteLine(points) {
   map.setBounds(bounds, 50, 30, 50, 30);
 }
 
+export function clearRoute() { line?.setMap(null); line = null; }
+
+// On the way back their own position is hidden unless they ask for it.
+export function setMeVisible(visible) {
+  me?.setMap(visible ? map : null);
+  meCircle?.setMap(visible ? map : null);
+}
+
 // The map sits in a section that can be resized or shown later: redraw it.
 export function relayout() { map?.relayout(); }

@@ -7,6 +7,7 @@ import { Talk } from './talk.js';
 import { streetsAround, frontOf } from './osm.js';
 import { distance, bearing, compass } from './geo.js';
 import { optionText } from './places.js';
+import { WayBack, MAX_DETOURS } from './wayback.js';
 
 // Openers start from a different direction each walk, so they don't all sound alike. All of
 // them low-key: a friend picking up the phone, not a comedian.
@@ -19,8 +20,8 @@ const ANGLES = [
 export class Walk {
   // deps: { buildRoute, findNear, placesNear, surroundingTypes, destinationOptions, saveLandmark, saveInterest }
   // `route` can be null: the call then starts with picking where to go (plan()).
-  constructor({ voice, apiKey, model, start, route = null, profile = {}, deps, log = () => {}, onLine = () => {}, onNote = () => {}, onRoute = () => {}, onPhase = () => {}, onOptions = () => {}, onHighlight = () => {}, onDestination = () => {}, onLandmark = () => {} }) {
-    Object.assign(this, { voice, start, deps, profile, log, onRoute, onPhase, onOptions, onHighlight, onDestination, onLandmark });
+  constructor({ voice, apiKey, model, start, route = null, profile = {}, deps, log = () => {}, onLine = () => {}, onNote = () => {}, onRoute = () => {}, onPhase = () => {}, onOptions = () => {}, onHighlight = () => {}, onDestination = () => {}, onLandmark = () => {}, onHome = () => {} }) {
+    Object.assign(this, { voice, start, deps, profile, log, onRoute, onPhase, onOptions, onHighlight, onDestination, onLandmark, onHome });
     this.phase = 'there';
     this.personal = (route ? route.personal || [] : profile.landmarks || []).slice();
     this.nav = route ? new Navigator(route, this.personal) : null;
@@ -92,6 +93,7 @@ export class Walk {
     else { this.nav = new Navigator(route, this.personal); this.nav.update(this.here); }
     this.mind.setScene({ phase: this.phase, brief: routeBrief(route), extra: this.extra() });
     if (replanned) this.announced = new Set([0]); // the first direction from here comes with the reply
+    if (this.phase === 'back') this.back?.setRoute(route);
     this.onRoute(route);
     // Shops along the way arrive a moment later on a quick re-plan.
     route.more?.then(() => { if (this.nav.route === route) this.mind.setScene({ brief: routeBrief(route) }); });
@@ -99,7 +101,11 @@ export class Walk {
 
   // What the mind gets with every turn: where they are, and what's around them when they spoke.
   async context({ heard }) {
-    return { status: this.nav ? this.nav.status(this.phase) : this.planStatus(), around: heard ? await this.around() : '' };
+    let status = this.nav ? this.nav.status(this.phase) : this.planStatus();
+    // The way back: the turn they're coming up to, so their answer can be checked (never said).
+    const cp = this.phase === 'back' && !this.back?.leading ? this.back?.cps?.[this.nav.next] : null;
+    if (cp) status += ` Their next turn, only to check what they say (never tell them): "${cp.title}${cp.sub ? ` ${cp.sub}` : ''}".`;
+    return { status, around: heard ? await this.around() : '' };
   }
 
   planStatus() {
@@ -219,11 +225,31 @@ export class Walk {
         this.mind.setScene({ extra: this.extra() });
         return { saved: true, their_interests: this.profile.likes };
       },
+      give_help: () => {
+        if (this.phase !== 'back') return { note: "Not on the way back: just answer them." };
+        return this.back.giveHelp(this.nav);
+      },
+      lead_me: () => {
+        if (this.phase !== 'back') return { note: 'You already lead.' };
+        this.back.lead();
+        return { leading: true, note: 'You lead from here, like on the way there: tell them the next bit now, in one breath.', status: this.nav.status(this.phase) };
+      },
+      try_other_way: async ({ direction, search_terms }) => {
+        if (this.phase !== 'back') return { note: 'Only on the way back.' };
+        if (this.back.detours >= MAX_DETOURS) return { ok: false, note: `They've used their ${MAX_DETOURS} detours: lightly stick with the current way this time (e.g. "ha, you're out of detours"). No lecture.` };
+        const via = search_terms?.length ? (await near(search_terms, 400, 1))[0] : this.back.detourPoint(this.nav, direction);
+        if (!via) return { ok: false, note: 'Not found: ask them where that is.' };
+        const theirs = await this.deps.buildRoute(this.nav.pos, this.nav.route.dest, { via: [via], quick: true, personal: this.personal, likes: this.profile.likes });
+        this.back.detours++;
+        this.setRoute(theirs);
+        this.log('way back: detour', { n: this.back.detours, direction, place: via.name || null });
+        return { ok: true, detours_left: MAX_DETOURS - this.back.detours, note: "Their way is the way home now (THE ROUTE). Go with it, in a few words (\"your call\"). Don't give directions." };
+      },
       start_way_back: async () => {
         if (!this.nav) return { note: "There's no destination yet, so no way back." };
         if (this.phase !== 'there') return { note: 'Already on the way back.' };
         await this.headBack();
-        return { switched: true, note: 'You are now on the way back and they lead. Hand over in one short, casual line; no directions.' };
+        return { switched: true, note: "The way back has started: they lead, you follow. Hand over in one light line of your own, no directions." };
       },
     };
   }
@@ -257,10 +283,12 @@ export class Walk {
     if (nav.arrived()) {
       if (!this.arrivedSaid) {
         this.arrivedSaid = true;
-        this.talk.event(this.phase === 'there' ? 'They have arrived: they are right at the destination now.' : 'They made it back to the start on their own.', 'arrive');
+        if (this.phase === 'there') this.talk.event('They have arrived: they are right at the destination now.', 'arrive');
+        else this.home();
       }
       return;
     }
+    if (this.phase === 'back') { this.back.onPosition(nav); return; }
     // Only trust GPS for moments like these when it's decent and they're actually walking.
     const walking = acc <= 30 && nav.stillFor() < 20;
     if (this.phase === 'there' && walking) {
@@ -299,6 +327,15 @@ export class Walk {
     clearInterval(this.warmTimer);
   }
 
+  // Back at the start: what the way back looked like, and a natural ending.
+  home() {
+    const s = this.back.summary();
+    this.log('way back: summary', s);
+    this.onHome(s);
+    const moment = s.turns.find(t => t.outcome === 'on your own') || s.turns[0];
+    this.talk.event(`They made it back to the start${s.rescued ? ' (you led the last part, because they asked)' : ', leading the way'}. How it went: ${s.alone} of ${s.turns.length} turns on their own, ${s.helpSteps} help steps, ${s.wrongWays} wrong-way moments${s.detours ? `, ${s.detours} detours of their own` : ''}.${moment ? ` A real moment to mention: "${moment.turn}" (${moment.outcome}).` : ''} One natural line about it (no corny praise), then one short question: what helped them most finding the way back.`, 'arrive');
+  }
+
   // The turnover: a fresh route back to the start, and the mind switches roles.
   async headBack() {
     if (this.phase !== 'there' || !this.nav) return;
@@ -310,6 +347,7 @@ export class Walk {
     this.nav.update(raw);
     this.arrivedSaid = false;
     this.offCount = 0;
+    this.back = new WayBack({ say: (text, key) => this.talk.event(text, key), log: this.log });
     this.mind.setScene({ phase: 'back' });
     this.setRoute(back, false);
     this.onPhase('back');
