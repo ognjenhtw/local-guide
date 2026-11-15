@@ -21,6 +21,22 @@
       <div id="home-map"></div>
       <p id="where" class="muted"></p>
 
+      <section id="checkpoint" hidden>
+        <div class="cp-head">
+          <button id="cp-prev" type="button" class="cp-arrow" aria-label="Previous checkpoint">‹</button>
+          <div class="cp-text"><b id="cp-title"></b><br><small id="cp-sub"></small></div>
+          <button id="cp-next" type="button" class="cp-arrow" aria-label="Next checkpoint">›</button>
+        </div>
+        <div class="cp-pic">
+          <div id="cp-view"></div>
+          <img id="cp-photo" alt="" hidden />
+          <span id="cp-brand" class="brand" hidden></span>
+          <p id="cp-none" hidden>No street view here</p>
+        </div>
+        <button id="cp-check" type="button" class="secondary" hidden>Is this it? Check with a photo</button>
+        <input id="check-input" type="file" accept="image/*" capture="environment" hidden />
+      </section>
+
       <section id="search-section">
         <form id="search-form">
           <input id="search-input" type="search" placeholder="Where do you want to go?" autocomplete="off" />

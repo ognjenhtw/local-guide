@@ -3,6 +3,8 @@ import { loadKakao, placesNear, findNear, SURROUNDING_TYPES } from './kakao.js';
 import { destinationOptions, optionText } from './places.js';
 import { ensureMap, showMe, showOptions, highlight, showRouteLine, showMarkers } from './mapview.js';
 import { savePhoto, photoURL, shrinkPhoto } from './photos.js';
+import { checkpointsOf, BRAND_COLORS } from './checkpoints.js';
+import { showView } from './streetview.js';
 import { buildRoute } from './route.js';
 import { PROVIDERS, createVoice } from './providers/index.js';
 import { MIND_MODELS } from './mind.js';
@@ -253,6 +255,7 @@ async function showRoute(dest) {
   const p = getProfile(profile());
   route = await buildRoute(start, dest, { personal: p.landmarks, likes: p.likes || [] });
   showRouteLine(route.line);
+  setCheckpoints(route);
   prepareWalk(); // the guide's opener gets written now, so it plays the moment they tap Start
   log(`route: ${route.distance} m, ${route.decisions.length} turns, built in ${route.buildMs} ms${route.streetsError ? `, no street layout (${route.streetsError})` : ''}`);
   $('route-summary').textContent = `${route.distance} m · about ${Math.round(route.time / 60)} min · ${route.decisions.length} turns`;
@@ -302,6 +305,49 @@ $('start-form').onsubmit = async e => {
   e.preventDefault();
   const q = $('start-search').value.trim();
   if (q) listStartOptions(await findNear(start, [q], 800, 10));
+};
+
+// --- Checkpoints: what each turn looks like ---------------------------------------------
+
+let checkpoints = [], cpIndex = 0, cpFlippedAt = 0;
+
+function setCheckpoints(r, at = 0) {
+  checkpoints = r ? checkpointsOf(r) : [];
+  $('checkpoint').hidden = !checkpoints.length;
+  if (checkpoints.length) showCheckpoint(at);
+}
+
+async function showCheckpoint(i) {
+  cpIndex = Math.max(0, Math.min(i, checkpoints.length - 1));
+  const cp = checkpoints[cpIndex];
+  $('cp-title').textContent = `${cp.n}/${checkpoints.length} · ${cp.title}`;
+  $('cp-sub').textContent = cp.sub;
+  $('cp-prev').disabled = cpIndex === 0;
+  $('cp-next').disabled = cpIndex === checkpoints.length - 1;
+  const b = cp.brand && BRAND_COLORS[cp.brand];
+  $('cp-brand').hidden = !b;
+  if (b) Object.assign($('cp-brand'), { textContent: cp.brand }), Object.assign($('cp-brand').style, { background: b[0], color: b[1] });
+  // Their own photo of the landmark, if they took one; otherwise the street view.
+  const own = cp.photoOf ? await photoURL(profile(), cp.photoOf.photo).catch(() => null) : null;
+  $('cp-photo').hidden = !own;
+  if (own) { $('cp-photo').src = own; $('cp-none').hidden = true; return; }
+  const shown = await showView($('cp-view'), cp.from, cp.look).catch(err => { log('street view:', err.message); return false; });
+  if (checkpoints[cpIndex] === cp) $('cp-none').hidden = shown;
+}
+
+$('cp-prev').onclick = () => { cpFlippedAt = Date.now(); showCheckpoint(cpIndex - 1); };
+$('cp-next').onclick = () => { cpFlippedAt = Date.now(); showCheckpoint(cpIndex + 1); };
+$('cp-check').onclick = () => $('check-input').click();
+$('check-input').onchange = async () => {
+  const file = $('check-input').files[0];
+  $('check-input').value = '';
+  if (!file || !walk) return;
+  const cp = checkpoints[cpIndex];
+  try {
+    const { base64 } = await shrinkPhoto(file);
+    addLine('note', '(photo: is this it?)');
+    walk.checkPhoto(base64, `${cp.title}${cp.sub ? ` ${cp.sub}` : ''}`);
+  } catch (err) { log('photo failed:', err.message); }
 };
 
 // --- Walking ---------------------------------------------------------------------------
@@ -361,6 +407,7 @@ function newWalk(withRoute) {
       route = r;
       if (walkLog) walkLog.data.dest = dest;
       showRouteLine(r.line);
+      setCheckpoints(r);
       $('route-section').hidden = false;
       $('route-title').textContent = dest.name;
       $('route-summary').textContent = `${r.distance} m · about ${Math.max(1, Math.round(r.time / 60))} min`;
@@ -372,7 +419,13 @@ function newWalk(withRoute) {
     onLine: text => addLine('guide', text),
     // Before Start (the opener is written while the route is shown) a problem shows by the Start button.
     onNote: text => { addLine('note', text); if (walk !== prepared) { $('guide-check').textContent = text; $('guide-check').hidden = false; } },
-    onRoute: r => { showRouteOnMap(r.line); walkLog?.add('route', { m: r.distance, turns: r.decisions.length }); },
+    onRoute: r => {
+      showRouteOnMap(r.line);
+      walkLog?.add('route', { m: r.distance, turns: r.decisions.length });
+      // On the way there the checkpoints follow the new route; on the way back they lead, so none.
+      if (walk?.phase === 'back') setCheckpoints(null);
+      else if (walk && walk.nav?.route === r) { showRouteLine(r.line); setCheckpoints(r, walk.nav.next); }
+    },
     onPhase: ph => { showPhase(ph); addLine('note', '— heading back —'); walkLog?.add('phase', { phase: ph }); },
   });
 }
@@ -433,6 +486,7 @@ async function startCall() {
 // Both ways into a call end here: follow GPS, keep the screen on.
 async function callStarted() {
   walk.live();
+  $('cp-check').hidden = false;
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
   watchId = navigator.geolocation?.watchPosition(g => {
     const raw = { lat: g.coords.latitude, lng: g.coords.longitude, accuracy: g.coords.accuracy };
@@ -441,6 +495,8 @@ async function callStarted() {
     walkLog.add('gps', { lat: pos.lat, lng: pos.lng, acc: Math.round(raw.accuracy), corrected: !!walk.nav?.correction });
     showMe(pos);
     showPosition(pos);
+    // The card follows their next turn, unless they just flipped through it themselves.
+    if (walk.nav && walk.phase === 'there' && checkpoints.length && cpIndex !== walk.nav.next && Date.now() - cpFlippedAt > 20000) showCheckpoint(walk.nav.next);
     $('nav-status').textContent = walk.nav ? walk.nav.status(walk.phase).replace('[status] ', '') : `Choosing where to go · GPS ±${Math.round(raw.accuracy)} m`;
   }, e => log('GPS error:', e.message), { enableHighAccuracy: true, maximumAge: 0 });
   costTimer = setInterval(() => walk && showPhase(walk.phase), 5000);
@@ -462,6 +518,7 @@ function stopWalk() {
   walk?.close();
   walk = null;
   $('talk-btn').hidden = false;
+  $('cp-check').hidden = true;
   $('walk-section').hidden = true;
   $('route-section').hidden = false;
   showWalks();

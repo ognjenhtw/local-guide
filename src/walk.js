@@ -41,6 +41,11 @@ export class Walk {
   // even if they've walked on by the time the guide answers.
   noteSpeech() { this.spokeAt = { ...this.pos, t: Date.now() }; }
 
+  // They took a photo to check they're at the right spot for a checkpoint.
+  checkPhoto(base64, what) {
+    this.talk.event(`They took a photo to check they're at the right spot for the checkpoint: ${what}. Look at the photo (attached) and say plainly, in a few words, whether it matches and what to do now. Don't save it as a landmark.`, null, [base64]);
+  }
+
   // They took a photo of something here. It's kept on the phone (`id`), and the guide looks at it.
   photo(base64, id) {
     this.pendingPhoto = { id, at: { ...this.pos }, t: Date.now() };

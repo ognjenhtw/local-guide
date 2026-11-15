@@ -223,7 +223,10 @@ export function routeFeatures(ways, route, cuts) {
   return route.decisions.map((t, i) => {
     const f = {};
     const ring = rings.find(r => distance(r, t) < 25 + r.size / 2);
-    if (ring) f.rotary = ring.size < 45 ? 'a small rotary (a little roundabout)' : 'a rotary (roundabout)';
+    if (ring) {
+      f.rotary = ring.size < 45 ? 'a small rotary (a little roundabout)' : 'a rotary (roundabout)';
+      f.rotaryAt = { lat: ring.lat, lng: ring.lng };
+    }
     const leg = t.leg || {};
     // The street crossed at a crosswalk: the one nearest the middle of the crossing.
     if (t.action.startsWith('crosswalk')) {
