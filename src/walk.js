@@ -19,8 +19,8 @@ const ANGLES = [
 export class Walk {
   // deps: { buildRoute, findNear, placesNear, surroundingTypes, destinationOptions, saveLandmark, saveInterest }
   // `route` can be null: the call then starts with picking where to go (plan()).
-  constructor({ voice, apiKey, model, start, route = null, profile = {}, deps, log = () => {}, onLine = () => {}, onNote = () => {}, onRoute = () => {}, onPhase = () => {}, onOptions = () => {}, onHighlight = () => {}, onDestination = () => {} }) {
-    Object.assign(this, { voice, start, deps, profile, log, onRoute, onPhase, onOptions, onHighlight, onDestination });
+  constructor({ voice, apiKey, model, start, route = null, profile = {}, deps, log = () => {}, onLine = () => {}, onNote = () => {}, onRoute = () => {}, onPhase = () => {}, onOptions = () => {}, onHighlight = () => {}, onDestination = () => {}, onLandmark = () => {} }) {
+    Object.assign(this, { voice, start, deps, profile, log, onRoute, onPhase, onOptions, onHighlight, onDestination, onLandmark });
     this.phase = 'there';
     this.personal = (route ? route.personal || [] : profile.landmarks || []).slice();
     this.nav = route ? new Navigator(route, this.personal) : null;
@@ -36,6 +36,16 @@ export class Walk {
 
   // Where they are, with or without a route yet.
   get pos() { return this.nav?.pos || this.here; }
+
+  // They started talking: remember where, so "oh, a music shop" is saved at the spot they meant,
+  // even if they've walked on by the time the guide answers.
+  noteSpeech() { this.spokeAt = { ...this.pos, t: Date.now() }; }
+
+  // They took a photo of something here. It's kept on the phone (`id`), and the guide looks at it.
+  photo(base64, id) {
+    this.pendingPhoto = { id, at: { ...this.pos }, t: Date.now() };
+    this.talk.event("They just took a photo of something here (attached). In a few natural words, say what you see. If it's a place worth remembering for them, save it with remember_landmark: the photo and this spot go with it. If you can read a name or tell what kind of place it is, use that.", null, [base64]);
+  }
 
   // The call starts before a destination is picked: hello, and where are we going?
   plan(startFix, pastOpeners = []) {
@@ -177,13 +187,27 @@ export class Walk {
           ? { places: found.map(p => `${placeText(p)}, ${Math.round(distance(this.pos, p))} m ${compass(bearing(this.pos, p))} of them`) }
           : { places: [], note: 'Nothing like that nearby.' };
       },
-      remember_landmark: async ({ label, search_terms, note }) => {
-        const place = search_terms?.length ? (await near(search_terms, 200, 1))[0] : null;
-        const spot = place || this.pos;
-        const landmark = { label, place_name: place?.name, note, lat: spot.lat, lng: spot.lng };
+      remember_landmark: async ({ label, search_terms, note, same_place_as_before }) => {
+        // The spot they meant: where the photo was taken, or where they were when they said it.
+        const photo = this.pendingPhoto && Date.now() - this.pendingPhoto.t < 180000 ? this.pendingPhoto : null;
+        const said = photo?.at || (this.spokeAt && Date.now() - this.spokeAt.t < 60000 ? this.spokeAt : null) || this.pos;
+        const place = search_terms?.length ? (await near(search_terms, 120, 1, said))[0] : null;
+        const spot = place || said;
+        if (photo) this.pendingPhoto = null;
+        // The place they just mentioned, now with a photo (or more said about it): one landmark.
+        const last = this.lastLandmark;
+        if (same_place_as_before && last && Date.now() - last.t < 600000) {
+          Object.assign(last.lm, { label: label || last.lm.label, note: note || last.lm.note, ...(photo ? { photo: photo.id } : {}) });
+          this.deps.updateLandmark(last.lm);
+          this.onLandmark(last.lm);
+          return { saved: true, updated_the_one_from_before: true, with_photo: !!last.lm.photo };
+        }
+        const landmark = { id: Date.now().toString(36), label, place_name: place?.name, note, lat: spot.lat, lng: spot.lng, ...(photo ? { photo: photo.id } : {}) };
+        this.lastLandmark = { lm: landmark, t: Date.now() };
         const total = this.deps.saveLandmark(landmark);
         this.personal.push(landmark);
-        return { saved: true, at: place ? placeText(place) : 'where they are now', landmarks_on_their_map: total };
+        this.onLandmark(landmark);
+        return { saved: true, at: place ? placeText(place) : photo ? 'where they took the photo' : 'where they were when they said it', with_photo: !!photo, landmarks_on_their_map: total };
       },
       note_interest: ({ interest }) => {
         this.profile.likes = this.deps.saveInterest(interest);

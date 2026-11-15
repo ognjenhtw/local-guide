@@ -24,9 +24,20 @@ export function getProfile(name) {
 export function saveLandmark(name, landmark) {
   const all = read(KEY, {});
   all[name] ??= { name, landmarks: [] };
-  all[name].landmarks.push({ ...landmark, id: Date.now().toString(36), created: new Date().toISOString() });
+  all[name].landmarks.push({ ...landmark, id: landmark.id || Date.now().toString(36), created: new Date().toISOString() });
   write(KEY, all);
   return all[name].landmarks.length;
+}
+
+// The same landmark again, now with more (e.g. its photo).
+export function updateLandmark(name, landmark) {
+  const all = read(KEY, {});
+  const list = all[name]?.landmarks || [];
+  const i = list.findIndex(l => l.id === landmark.id);
+  if (i < 0) return false;
+  list[i] = { ...list[i], ...landmark };
+  write(KEY, all);
+  return true;
 }
 
 // Things the walker likes ("coffee shops", "burgers"): used to pick which places to point out.

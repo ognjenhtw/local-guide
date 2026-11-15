@@ -46,6 +46,11 @@ export async function buildRoute(from, to, { personal = [], likes = [], via = []
   route.likes = likes;
   route.personal = personal.filter(m => lineDistance(m, route.line) < 50);
   route.cuts = route.decisions.map(t => project(route.line, t).s);
+  // Their own landmarks along each stretch, in walking order with their side (like the shops).
+  const mine = route.personal.map(m => ({ ...m, ...project(route.line, m) })).filter(m => m.off < 40).sort((a, b) => a.s - b.s);
+  const mineBetween = (from, to) => mine.filter(m => m.s >= from && m.s < to).map(m => ({ ...m, after_m: Math.round(m.s - from) }));
+  if (route.startLeg) route.startLeg.mine = mineBetween(0, route.cuts[0] ?? Infinity);
+  route.decisions.forEach((t, i) => { if (t.leg) t.leg.mine = mineBetween(route.cuts[i], route.cuts[i + 1] ?? Infinity); });
   const d = project(route.line, to);
   route.destSide = d.off > 4 ? d.side : null; // which side of the street the destination is on
 

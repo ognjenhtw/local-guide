@@ -62,7 +62,9 @@ Where they are:
 - Right at the start, a turn's left/right is measured from a direction they may not be facing. If [status] says which way the route goes from the way they face, use exactly that. Otherwise describe the first move by where it leads (the crosswalk by them, the little street towards the big road), not by left/right.
 - Once you know where they are, don't ask again.
 
-Tools: call them straight away, writing nothing before the call (anything written before a tool call is thrown away). After a tool, say just your line.
+Tools: call them straight away, writing nothing before the call (anything written before a tool call is thrown away). Lookups take a few seconds, so give say_now a few natural words that fill that moment and flow into what you'll say after ("Ooh, burgers, nice." then the answer). After a tool, say just your line, without repeating what you said in say_now.
+
+Their own map: when they notice something they like ("oh, a music shop"), or send a photo, save it with remember_landmark (it keeps the spot where they were when they said it, and the photo if they took one), and react like a friend would, in a few words; say once, casually, that it's on their map. Next time, use their own landmarks in directions ("left at your record shop").
 
 [status], [app] and [around them] lines come from the app, not from your friend: they're facts for you, never things to read out. "Walker:" lines are what your friend said out loud, through speech-to-text, so names can be misheard ("Parknik" is Parknic, "Double 6" is Double Six).
 If an [app] note needs no words (you just covered it, or there's nothing to add), reply with exactly ${QUIET}`;
@@ -94,13 +96,17 @@ const WAY_BACK = `ON THE WAY BACK (only once a system note in the conversation s
 - Light chat is good: things you passed, whatever they bring up. Comfortable silence is fine too.
 - Questions that aren't about which way to go (what's around, what a place is): just answer.`;
 
+// Lookups take a few seconds: the mind can give a few words to say right away, so there's no
+// silence (said the moment the tool is called, before it runs).
+const SAY_NOW = { type: 'string', description: 'A few casual words to say right now while this runs (it takes a few seconds), flowing into what you will say after: a reaction, not an announcement ("Ooh, Double Six, nice." / "Wait, a record shop? Nice find."). Never "let me check", "one sec", or "I\'ll save that". Leave it out if nothing natural fits.' };
+
 export const TOOLS = [
   {
     name: 'find_destination',
     description: 'Search for where they want to go: a name ("Double Six Burger") or a kind of place ("7-Eleven", "a cafe"). The matches appear as numbered pins on their screen; you get each one described: how long a walk, the subway station nearby, what is right next to it, the first bit of the way there.',
     input_schema: {
       type: 'object',
-      properties: { query: { type: 'string', description: 'What to search for, as Kakao Maps would find it: Korean or English, e.g. "세븐일레븐", "카페", "Double Six Burger".' } },
+      properties: { say_now: SAY_NOW, query: { type: 'string', description: 'What to search for, as Kakao Maps would find it: Korean or English, e.g. "세븐일레븐", "카페", "Double Six Burger".' } },
       required: ['query'],
     },
   },
@@ -112,15 +118,14 @@ export const TOOLS = [
   {
     name: 'go_to',
     description: 'They confirmed where to go: plan the route there. THE ROUTE then comes in a system note.',
-    input_schema: { type: 'object', properties: { number: { type: 'integer', description: 'The option number they confirmed.' } }, required: ['number'] },
+    input_schema: { type: 'object', properties: { say_now: SAY_NOW, number: { type: 'integer', description: 'The option number they confirmed.' } }, required: ['number'] },
   },
   {
     name: 'locate',
     description: "Put your friend at a place they say they're at, standing in front of, or passing right now, when that's not where [status] says they are. Searches near them, takes the best match, and re-plans THE ROUTE from there. Then give the first direction from there.",
     input_schema: {
       type: 'object',
-      properties: {
-        search_terms: { type: 'array', items: { type: 'string' }, description: 'The place they named, 2 to 4 search words in Korean and English, e.g. ["한양도성박물관", "서울한양도성박물관", "Seoul City Wall Museum"].' },
+      properties: { say_now: SAY_NOW,         search_terms: { type: 'array', items: { type: 'string' }, description: 'The place they named, 2 to 4 search words in Korean and English, e.g. ["한양도성박물관", "서울한양도성박물관", "Seoul City Wall Museum"].' },
         side: { type: 'string', enum: ['left', 'right', 'in front', 'behind', 'unknown'], description: 'Which side of them that place is on, if they said.' },
       },
       required: ['search_terms'],
@@ -131,7 +136,7 @@ export const TOOLS = [
     description: 'Re-plan THE ROUTE through a place on the way they want to go themselves ("I\'ll go via the 7-Eleven on the corner"). Tells you how much longer their way is.',
     input_schema: {
       type: 'object',
-      properties: { search_terms: { type: 'array', items: { type: 'string' }, description: 'The place their way goes past, 2 to 4 search words in Korean and English.' } },
+      properties: { say_now: SAY_NOW, search_terms: { type: 'array', items: { type: 'string' }, description: 'The place their way goes past, 2 to 4 search words in Korean and English.' } },
       required: ['search_terms'],
     },
   },
@@ -140,7 +145,7 @@ export const TOOLS = [
     description: 'Look up places of some kind near them that are not in THE ROUTE or [around them], e.g. "is there an ATM / a toilet / an Olive Young near here?".',
     input_schema: {
       type: 'object',
-      properties: { search_terms: { type: 'array', items: { type: 'string' }, description: '2 to 4 search words in Korean and English.' } },
+      properties: { say_now: SAY_NOW, search_terms: { type: 'array', items: { type: 'string' }, description: '2 to 4 search words in Korean and English.' } },
       required: ['search_terms'],
     },
   },
@@ -149,8 +154,8 @@ export const TOOLS = [
     description: "Save a landmark to your friend's own map, when they notice or like something along the way. Without search terms it saves the spot where they are.",
     input_schema: {
       type: 'object',
-      properties: {
-        label: { type: 'string', description: 'What they call it, e.g. "the record shop".' },
+      properties: { say_now: SAY_NOW,         label: { type: 'string', description: 'What they call it, e.g. "the record shop".' },
+        same_place_as_before: { type: 'boolean', description: 'True if this is the place they just told you about a moment ago (e.g. now they took a photo of it): the landmark you saved then gets updated instead of a second one.' },
         search_terms: { type: 'array', items: { type: 'string' }, description: 'Search words for the place, if it is a shop or building.' },
         note: { type: 'string', description: 'Why it matters to them, e.g. "they collect vinyl".' },
       },
@@ -319,14 +324,18 @@ export class Mind {
   // sentence by sentence to `onSentence` while it's written). `signal` can abort it until the
   // first sentence is out or a tool runs (the walker kept talking: everything gets answered
   // together).
-  async turn({ heard = [], events = [], status = '', around = '', signal, onToolStart, onSentence }) {
+  async turn({ heard = [], events = [], images = [], status = '', around = '', signal, onToolStart, onSentence }) {
     const text = [
       status,
       ...events.map(e => `[app] ${e}`),
       around ? `[around them, for matching what they see or "what's around me"; this is NOT the route]\n${around}` : '',
       heard.length ? `Walker: "${heard.join(' ')}"` : '',
     ].filter(Boolean).join('\n');
-    const messages = [...this.history, { role: 'user', content: text }];
+    // Photos they took come first, then the text about them.
+    const content = images.length
+      ? [...images.map(data => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } })), { type: 'text', text }]
+      : text;
+    const messages = [...this.history, { role: 'user', content }];
     const t0 = Date.now();
     const said = [];
     const give = s => { said.push(s); onSentence?.(s); };
@@ -336,6 +345,9 @@ export class Mind {
       if (res.stop_reason === 'refusal') { this.log('mind declined', res.stop_details); break; }
       const uses = res.content.filter(b => b.type === 'tool_use');
       if (!uses.length) break;
+      // The words to fill the lookup with go out now, before the tool runs.
+      const bridge = uses.map(u => u.input?.say_now).find(Boolean);
+      if (bridge && !META.test(bridge)) give(bridge.trim());
       onToolStart?.();
       const results = await Promise.all(uses.map(async u => {
         let out;

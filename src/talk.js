@@ -53,9 +53,10 @@ export class Talk {
   }
 
   // An app moment. With a key, a newer moment of the same kind replaces an unhandled older one.
-  event(text, key) {
+  // `images`: photos that go with it (base64 JPEG).
+  event(text, key, images) {
     if (key) this.events = this.events.filter(e => e.key !== key);
-    this.events.push({ text, key });
+    this.events.push({ text, key, images });
     this.kick();
   }
 
@@ -94,7 +95,7 @@ export class Talk {
       // History stays append-only (thinking blocks must not be edited), so a cut-off line is noted now.
       if (this.cutOff) { events.unshift({ text: 'Your last line got cut off: they started talking over you.' }); this.cutOff = false; }
       const ask = () => this.mind.turn({
-        heard, events: events.map(e => e.text), ...ctx, signal: ctrl.signal, onSentence,
+        heard, events: events.map(e => e.text), images: events.flatMap(e => e.images || []), ...ctx, signal: ctrl.signal, onSentence,
         onToolStart: () => { this.abortable = false; },
       });
       let result;

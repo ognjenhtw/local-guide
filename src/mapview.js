@@ -53,6 +53,24 @@ export function clearOptions() {
   pins = [];
 }
 
+// The walker's own landmarks: their photo as the pin, or a star; the name underneath.
+let mine = [];
+export async function showMarkers(landmarks, photoFor) {
+  if (!map) return;
+  for (const m of mine) m.setMap(null);
+  mine = [];
+  for (const lm of landmarks) {
+    const el = document.createElement('div');
+    el.className = 'mine';
+    const url = lm.photo ? await photoFor(lm).catch(() => null) : null;
+    el.innerHTML = `${url ? `<img src="${url}" alt="">` : '<span class="star">★</span>'}<small></small>`;
+    el.querySelector('small').textContent = lm.label;
+    const o = new window.kakao.maps.CustomOverlay({ position: ll(lm), content: el, yAnchor: 1, zIndex: 1 });
+    o.setMap(map);
+    mine.push(o);
+  }
+}
+
 export function showRouteLine(points) {
   if (!ensureMap(points[0])) return;
   line?.setMap(null);

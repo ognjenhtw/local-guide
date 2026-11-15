@@ -1,12 +1,13 @@
 import { log } from './log.js';
 import { loadKakao, placesNear, findNear, SURROUNDING_TYPES } from './kakao.js';
 import { destinationOptions, optionText } from './places.js';
-import { ensureMap, showMe, showOptions, highlight, showRouteLine } from './mapview.js';
+import { ensureMap, showMe, showOptions, highlight, showRouteLine, showMarkers } from './mapview.js';
+import { savePhoto, photoURL, shrinkPhoto } from './photos.js';
 import { buildRoute } from './route.js';
 import { PROVIDERS, createVoice } from './providers/index.js';
 import { MIND_MODELS } from './mind.js';
 import { Walk } from './walk.js';
-import { profileNames, getProfile, saveLandmark, saveInterest, WalkLog, exportWalks, walksOf, deleteWalk, transcriptOf } from './profile.js';
+import { profileNames, getProfile, saveLandmark, updateLandmark, saveInterest, WalkLog, exportWalks, walksOf, deleteWalk, transcriptOf } from './profile.js';
 import { showPosition, showRoute as showRouteOnMap } from './debugmap.js';
 
 
@@ -73,6 +74,13 @@ function showProfile() {
   store.set('profile', p.name);
   $('profile-info').textContent = `${p.landmarks.length} landmark${p.landmarks.length === 1 ? '' : 's'} on ${p.name}'s map`;
   showWalks();
+  refreshMarkers();
+}
+
+// Only this person's own landmarks are ever shown.
+function refreshMarkers() {
+  const who = profile();
+  showMarkers(getProfile(who).landmarks, lm => photoURL(who, lm.photo)).catch(err => log('markers:', err.message));
 }
 
 // "My walks": this profile's past conversations, to read or delete.
@@ -303,7 +311,7 @@ let walk, voice, walkLog, watchId, wakeLock, costTimer, prepared, preparedVoice;
 function makeVoice() {
   return createVoice({
     apiKey: settings.openaiKey(), model: settings.model(), voice: settings.voice(),
-    onSpeechStart: () => walk?.talk.walkerStarted(),
+    onSpeechStart: () => { walk?.noteSpeech(); walk?.talk.walkerStarted(); },
     onSpeechStop: () => { walkLog?.add('event', { what: 'walker stopped' }); walk?.talk.walkerStopped(); },
     onPlaying: () => walkLog?.add('event', { what: 'voice playing' }), // with 'walker stopped': the reply delay
     onUtterance: text => {
@@ -343,9 +351,11 @@ function newWalk(withRoute) {
     deps: {
       buildRoute, findNear, placesNear, surroundingTypes: SURROUNDING_TYPES, destinationOptions,
       saveLandmark: lm => { const n = saveLandmark(profile(), lm); showProfile(); return n; },
+      updateLandmark: lm => { updateLandmark(profile(), lm); showProfile(); },
       saveInterest: i => saveInterest(profile(), i),
     },
     onOptions: found => showFound(found),
+    onLandmark: () => refreshMarkers(),
     onHighlight: n => markChosen(n),
     onDestination: (dest, r) => {
       route = r;
@@ -460,6 +470,20 @@ function stopWalk() {
 
 $('start-btn').onclick = () => startWalk().catch(err => log('ERROR', err.message));
 $('talk-btn').onclick = () => startCall().catch(err => log('ERROR', err.message));
+// A photo of something they like: kept on the phone, and the guide looks at it.
+$('photo-btn').onclick = () => $('photo-input').click();
+$('photo-input').onchange = async () => {
+  const file = $('photo-input').files[0];
+  $('photo-input').value = '';
+  if (!file || !walk) return;
+  try {
+    const { blob, base64 } = await shrinkPhoto(file);
+    const id = Date.now().toString(36);
+    await savePhoto(profile(), id, blob);
+    addLine('note', '(photo)');
+    walk.photo(base64, id);
+  } catch (err) { log('photo failed:', err.message); }
+};
 $('back-btn').onclick = () => headBack().catch(err => log('ERROR', err.message));
 $('stop-btn').onclick = stopWalk;
 $('search-form').addEventListener('submit', e => onSearch(e).catch(err => log('ERROR', err.message)));
@@ -471,5 +495,6 @@ loadKakao()
     log('Kakao ready');
     // The map opens on where they are; without a location it shows central Seoul (only for looking).
     if (!await findMe()) ensureMap({ lat: 37.5729, lng: 127.0016 });
+    refreshMarkers();
   })
   .catch(err => log('ERROR', err.message));

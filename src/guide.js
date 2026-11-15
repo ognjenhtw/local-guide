@@ -61,9 +61,11 @@ function turnBrief(route, t, i) {
       : `to ${route.dest.name}`;
     const via = streetText(f.along);
     out.push(`   Then straight on for ${about(leg.distance)}${via ? ` along ${via}` : ''}, ${ends}. No other turns on this stretch.`);
+    const ownMarks = (leg.mine || []).map(m => `${mineText(m)} on the ${m.side}, after ${about(m.after_m)}`);
     const shops = (leg.shops || []).map(p => `${placeText(p)} on the ${p.side}, after ${about(p.after_m)}`);
     const passes = (leg.passes || []).filter(p => !isBuilding(p.name) && !(leg.shops || []).some(s => s.name === p.name))
       .map(p => `${p.name} (map label), after ${about(Math.max(0, project(route.line, p).s - route.cuts[i]))}`);
+    if (ownMarks.length) out.push(`   Their own landmarks on this stretch (use these first): ${ownMarks.join('; ')}.`);
     out.push(`   On the way, in order: ${[...shops, ...passes].join('; ') || (route.shopsReady === false ? 'still being looked up' : 'nothing listed')}.`);
   }
   return out.join('\n');
