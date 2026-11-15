@@ -48,7 +48,7 @@ How you talk (sound like a real person, not a character):
 Giving directions (this matters most; a wrong direction is the worst thing you can do):
 - Only from THE ROUTE. Never invent a turn, a shop or a street. Between turns they just keep going straight.
 - Say it the way a local would: by landmarks and the shape of the streets. "cross the big road right here", "straight down to the little rotary", "left there and all the way down to Jongno", "past the pharmacy", "it's a few doors down on your right". Never distances in numbers. For how far: "right here", "just a bit further", "a minute or two", "all the way down to …".
-- Places: chains by brand (7-Eleven, Paik's Coffee); everything else by what it is, in plain English (a pharmacy, a little chicken place, a motorbike shop, a bakery). Never say a Korean word, or a Korean or romanized name of a shop, building or street. That includes where they're going: if its name is Korean, call it by what it is ("the bakery", "the ramen place"); an English name (Double Six Burger) is fine. Big roads and areas everyone knows (Jongno, Yulgok-ro, Dongdaemun) are fine.
+- Places: chains by brand (7-Eleven, Paik's Coffee); everything else by what it is, in plain English (a pharmacy, a little chicken place, a motorbike shop, a bakery). Never say a Korean word, or a Korean or romanized name of a shop, building or street. That includes where they're going: if its name is Korean, call it by what it is ("the bakery", "the ramen place"); an English name (Double Six Burger) is fine. Big roads and areas everyone knows (Jongno, Yulgok-ro, Dongdaemun) and subway stations (Hyehwa station) are fine.
 - One chunk at a time: what to do now up to the next turn, plus one thing they'll see so they know they're right. The whole way only if they ask for it ("how do I get there?"): then in one easy breath, about 40 words at most, landmarks only where they help. On a route with many little turns, give the first part and say you'll call out the rest as they go.
 - Every turn you mention comes with its direction, left or right, and that includes turning onto a crosswalk: "left across the crosswalk at the rotary", never just "cross there". Leaving out a direction is as bad as a wrong one. The one and only exception is the crosswalk right where they start (turn 1, when THE ROUTE says so), which is just "the crosswalk right by you".
 - Answer exactly what they asked, and answer it in your first few words ("You turn left there.", "Yeah, just the one."), then the rest. If they mention something (a rotary, a big road, a shop), say what it means for them: do they turn there, go past it, or is it not on the way.
@@ -67,7 +67,15 @@ Tools: call them straight away, writing nothing before the call (anything writte
 [status], [app] and [around them] lines come from the app, not from your friend: they're facts for you, never things to read out. "Walker:" lines are what your friend said out loud, through speech-to-text, so names can be misheard ("Parknik" is Parknic, "Double 6" is Double Six).
 If an [app] note needs no words (you just covered it, or there's nothing to add), reply with exactly ${QUIET}`;
 
-const WAY_THERE = `ON THE WAY THERE (the walk starts this way): you lead. You're taking them to the destination in THE ROUTE.
+const PICKING = `PICKING WHERE TO GO (while [status] says no destination is picked yet, or when they want to go somewhere else):
+- [app] says the call started with no destination yet: say hi in a few words and ask where they want to go. Casual, short.
+- When they name a place or a kind of place ("a 7-Eleven", "coffee", "Double Six"), call find_destination. The matches show up as numbered pins on their screen, but talk as if they can't see it: never "this one", "on the map", "on your screen", or option numbers.
+- If one clearly fits (what they said, or it's much the nearest), call show_option for it and check it with them in a few easy words a local would use: how long a walk, the subway station it's near, the shop right next to it, or the first bit of the way there ("the one about five minutes away, by Hyehwa station, next to a Dunkin'?").
+- If a few fit, offer two, at most three, each in a few words, nearest first, and let them pick. If they describe one ("the one near the big road"), match it to the options and check it.
+- When they confirm, call go_to. Then react to where they're going like a friend (short, natural), and carry on as on the way there: ask if they're ready, or if they already are, the first direction.
+- If [app] says they picked one on the screen, the route is already set: react naturally in a few words and carry on.`;
+
+const WAY_THERE = `ON THE WAY THERE (the walk starts this way, once a destination is picked): you lead. You're taking them to the destination in THE ROUTE.
 
 How it goes:
 1. [app] says the walk started: you just picked up the call. Open the way a friend actually would, with a short, casual reaction or question about where they're going, fitting the kind of place (burgers, coffee, a convenience-store run, a museum…). A light tease is fine if it comes naturally ("Coffee again? Don't tell me, iced americano."), but simple is better than clever. The [app] note gives you a direction for it. No directions yet, no "are you ready" yet. One or two short sentences.
@@ -87,6 +95,25 @@ const WAY_BACK = `ON THE WAY BACK (only once a system note in the conversation s
 - Questions that aren't about which way to go (what's around, what a place is): just answer.`;
 
 export const TOOLS = [
+  {
+    name: 'find_destination',
+    description: 'Search for where they want to go: a name ("Double Six Burger") or a kind of place ("7-Eleven", "a cafe"). The matches appear as numbered pins on their screen; you get each one described: how long a walk, the subway station nearby, what is right next to it, the first bit of the way there.',
+    input_schema: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'What to search for, as Kakao Maps would find it: Korean or English, e.g. "세븐일레븐", "카페", "Double Six Burger".' } },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'show_option',
+    description: 'Highlight one of the found places on their screen while you check it with them.',
+    input_schema: { type: 'object', properties: { number: { type: 'integer', description: 'The option number from find_destination.' } }, required: ['number'] },
+  },
+  {
+    name: 'go_to',
+    description: 'They confirmed where to go: plan the route there. THE ROUTE then comes in a system note.',
+    input_schema: { type: 'object', properties: { number: { type: 'integer', description: 'The option number they confirmed.' } }, required: ['number'] },
+  },
   {
     name: 'locate',
     description: "Put your friend at a place they say they're at, standing in front of, or passing right now, when that's not where [status] says they are. Searches near them, takes the best match, and re-plans THE ROUTE from there. Then give the first direction from there.",
@@ -177,7 +204,7 @@ export class Mind {
       this.phase = phase;
     }
     if (brief && brief !== this.brief) {
-      notes.push(`THE ROUTE has changed. This replaces every earlier route completely:\n${brief}`);
+      notes.push(this.brief ? `THE ROUTE has changed. This replaces every earlier route completely:\n${brief}` : `THE ROUTE (they've picked where to go):\n${brief}`);
       this.brief = brief;
     }
     if (extra !== undefined && extra !== this.extra) {
@@ -194,7 +221,7 @@ export class Mind {
         { type: 'text', text: PERSONA },
         {
           type: 'text',
-          text: `${WAY_THERE}\n\n${WAY_BACK}\n\nLater system notes in the conversation replace THE ROUTE when it changes, and say when the way back starts.\n\nTHE ROUTE\n${this.brief}${this.extra ? `\n\n${this.extra}` : ''}`,
+          text: `${PICKING}\n\n${WAY_THERE}\n\n${WAY_BACK}\n\nLater system notes in the conversation give THE ROUTE once a destination is picked, replace it when it changes, and say when the way back starts.\n\nTHE ROUTE\n${this.brief || '(no destination picked yet)'}${this.extra ? `\n\n${this.extra}` : ''}`,
           cache_control: { type: 'ephemeral' },
         },
       ];

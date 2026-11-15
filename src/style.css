@@ -52,3 +52,11 @@ button.small { padding: 6px 10px; font-size: 14px; margin: 0; }
 #log { font-size: 12px; white-space: pre-wrap; color: var(--muted); max-height: 40vh; overflow: auto; }
 
 .warning { color: #b42318; font-weight: 600; }
+
+#home-map { height: 44vh; min-height: 260px; border-radius: 12px; margin: 4px 0 6px; overflow: hidden; }
+#talk-btn { width: 100%; margin-top: 8px; }
+button.pin { padding: 0 7px; min-width: 28px; height: 28px; border-radius: 14px; background: #fff; color: #1f6feb; border: 2px solid #1f6feb; font-size: 14px; font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+button.pin.chosen { background: #1f6feb; color: #fff; transform: scale(1.25); }
+.me-dot { width: 16px; height: 16px; border-radius: 50%; background: #1f6feb; border: 3px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
+#results .num { display: inline-block; min-width: 24px; color: var(--accent); }
+#results li.chosen { background: rgba(31,111,235,.10); }

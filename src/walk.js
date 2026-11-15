@@ -6,6 +6,7 @@ import { Mind } from './mind.js';
 import { Talk } from './talk.js';
 import { streetsAround, frontOf } from './osm.js';
 import { distance, bearing, compass } from './geo.js';
+import { optionText } from './places.js';
 
 // Openers start from a different direction each walk, so they don't all sound alike. All of
 // them low-key: a friend picking up the phone, not a comedian.
@@ -16,17 +17,34 @@ const ANGLES = [
 ];
 
 export class Walk {
-  // deps: { buildRoute, findNear, placesNear, surroundingTypes, saveLandmark, saveInterest }
-  constructor({ voice, apiKey, model, start, route, profile = {}, deps, log = () => {}, onLine = () => {}, onNote = () => {}, onRoute = () => {}, onPhase = () => {} }) {
-    Object.assign(this, { voice, start, deps, profile, log, onRoute, onPhase });
+  // deps: { buildRoute, findNear, placesNear, surroundingTypes, destinationOptions, saveLandmark, saveInterest }
+  // `route` can be null: the call then starts with picking where to go (plan()).
+  constructor({ voice, apiKey, model, start, route = null, profile = {}, deps, log = () => {}, onLine = () => {}, onNote = () => {}, onRoute = () => {}, onPhase = () => {}, onOptions = () => {}, onHighlight = () => {}, onDestination = () => {} }) {
+    Object.assign(this, { voice, start, deps, profile, log, onRoute, onPhase, onOptions, onHighlight, onDestination });
     this.phase = 'there';
-    this.nav = new Navigator(route, (route.personal || []).slice());
+    this.personal = (route ? route.personal || [] : profile.landmarks || []).slice();
+    this.nav = route ? new Navigator(route, this.personal) : null;
+    this.here = start;
+    this.options = [];
     this.mind = new Mind({ apiKey, model, log, handlers: this.tools() });
     this.talk = new Talk({ voice, mind: this.mind, log, onLine, onNote, context: ctx => this.context(ctx) });
     this.announced = new Set();
     this.offCount = 0;
     this.lastFix = 0;
-    this.setRoute(route, false);
+    if (route) this.setRoute(route, false);
+  }
+
+  // Where they are, with or without a route yet.
+  get pos() { return this.nav?.pos || this.here; }
+
+  // The call starts before a destination is picked: hello, and where are we going?
+  plan(startFix, pastOpeners = []) {
+    this.here = startFix;
+    this.refreshAround();
+    this.talk.event([
+      "The call just started and they haven't picked where to go yet. Say hi in a few words and ask where they want to go.",
+      pastOpeners.length ? `Lines you've opened with on earlier walks, so say something different: ${pastOpeners.map(o => `"${o}"`).join(' / ')}.` : '',
+    ].filter(Boolean).join(' '), 'start');
   }
 
   // The walk starts: the opener, nothing else.
@@ -47,7 +65,7 @@ export class Walk {
 
   extra() {
     const { likes = [] } = this.profile;
-    const mine = this.nav.personal;
+    const mine = this.personal;
     return [
       likes.length ? `They like: ${likes.join(', ')}.` : '',
       mine.length ? `Their own landmarks near this route: ${mine.map(m => `"${m.label}"${m.note ? ` (${m.note})` : ''}`).join('; ')}.` : '',
@@ -55,7 +73,8 @@ export class Walk {
   }
 
   setRoute(route, replanned = true) {
-    this.nav.setRoute(route);
+    if (this.nav) this.nav.setRoute(route);
+    else { this.nav = new Navigator(route, this.personal); this.nav.update(this.here); }
     this.mind.setScene({ phase: this.phase, brief: routeBrief(route), extra: this.extra() });
     if (replanned) this.announced = new Set([0]); // the first direction from here comes with the reply
     this.onRoute(route);
@@ -65,21 +84,28 @@ export class Walk {
 
   // What the mind gets with every turn: where they are, and what's around them when they spoke.
   async context({ heard }) {
-    return { status: this.nav.status(this.phase), around: heard ? await this.around() : '' };
+    return { status: this.nav ? this.nav.status(this.phase) : this.planStatus(), around: heard ? await this.around() : '' };
+  }
+
+  planStatus() {
+    const acc = Math.round(this.here?.accuracy || 99);
+    const where = this.here?.fixed ? 'position confirmed from what they told you'
+      : acc <= 25 ? `position confirmed (GPS good, ±${acc} m)` : `position NOT confirmed (GPS poor, ±${acc} m)`;
+    return `[status] No destination picked yet: they're choosing where to go; ${where}.`;
   }
 
   // What's around them, kept fresh in the background as they move, so nobody waits for it.
   async around() {
-    const pos = this.nav.pos;
+    const pos = this.pos;
     if (this.aroundCache && distance(this.aroundCache.pos, pos) < 25) return this.aroundCache.text;
     return this.refreshAround();
   }
 
   refreshAround() {
-    const pos = this.nav.pos;
+    const pos = this.pos;
     if (this.aroundLoading && distance(this.aroundLoading.pos, pos) < 25) return this.aroundLoading.promise;
     const promise = this.deps.placesNear(pos, 80, this.deps.surroundingTypes, 15).catch(() => []).then(places => {
-      const mine = this.nav.personal.filter(m => distance(pos, m) < 80).map(m => `- their own landmark "${m.label}", ${Math.round(distance(pos, m))} m ${compass(bearing(pos, m))}`);
+      const mine = this.personal.filter(m => distance(pos, m) < 80).map(m => `- their own landmark "${m.label}", ${Math.round(distance(pos, m))} m ${compass(bearing(pos, m))}`);
       const text = [...places.map(p => `- ${placeText(p)}, ${Math.round(distance(pos, p))} m ${compass(bearing(pos, p))}`), ...mine].join('\n') || '(nothing listed)';
       this.aroundCache = { pos, text };
       return text;
@@ -90,13 +116,34 @@ export class Walk {
 
   // --- Tools the mind can call -----------------------------------------------------------------
   tools() {
-    const near = (terms, radius, limit, from = this.nav.pos) => this.deps.findNear(from, terms || [], radius, limit);
+    const near = (terms, radius, limit, from = this.pos) => this.deps.findNear(from, terms || [], radius, limit);
     return {
+      find_destination: async ({ query }) => {
+        const options = await this.deps.destinationOptions(this.pos, query);
+        this.options = options;
+        this.onOptions(options);
+        return options.length
+          ? { options: options.map(optionText), note: "These are numbered pins on their screen, but talk as if they can't see it." }
+          : { options: [], note: 'Nothing like that near them. Ask what it is called, or what kind of place they mean.' };
+      },
+      show_option: ({ number }) => {
+        if (!this.options.some(o => o.n === number)) return { error: 'No such option. Call find_destination first.' };
+        this.onHighlight(number);
+        return { showing: number };
+      },
+      go_to: ({ number }) => this.goTo(number),
       locate: async ({ search_terms, side }) => {
-        const from = this.nav.raw || this.nav.pos;
+        const from = this.nav?.raw || this.pos;
         const found = await near(search_terms, 800, 6, from);
         if (!found.length) return { found: false, note: 'Nothing by that name near them. Ask for one other thing they can see right now, in one short question.' };
         const p = found[0]; // nearest to them
+        if (!this.nav) {
+          // No route yet: just remember where they really are, for searching and for the route.
+          this.here = { lat: p.lat, lng: p.lng, accuracy: 15, fixed: true };
+          this.aroundCache = null;
+          this.aroundLoading = null;
+          return { found: true, they_are_at: placeText(p), phone_location_was_m_away: Math.round(distance(from, p)), note: "Noted where they are. They haven't picked where to go yet." };
+        }
         // Passing it on their left/right: they're on the street beside it, on its side of the
         // street, facing along it. Otherwise ("in front of", "at"): plan from the place itself,
         // and TMAP finds the nearest pavement.
@@ -116,6 +163,7 @@ export class Walk {
         };
       },
       go_their_way: async ({ search_terms }) => {
+        if (!this.nav) return { error: 'No destination yet: pick where to go first.' };
         const found = (await near(search_terms, 600, 6)).filter(p => distance(this.nav.pos, p) > 40);
         if (!found.length) return { found: false, note: 'Not found further along; ask them where it is.' };
         const before = this.nav.remaining();
@@ -126,12 +174,15 @@ export class Walk {
       find_nearby: async ({ search_terms }) => {
         const found = await near(search_terms, 500, 5);
         return found.length
-          ? { places: found.map(p => `${placeText(p)}, ${Math.round(distance(this.nav.pos, p))} m ${compass(bearing(this.nav.pos, p))} of them`) }
+          ? { places: found.map(p => `${placeText(p)}, ${Math.round(distance(this.pos, p))} m ${compass(bearing(this.pos, p))} of them`) }
           : { places: [], note: 'Nothing like that nearby.' };
       },
       remember_landmark: async ({ label, search_terms, note }) => {
         const place = search_terms?.length ? (await near(search_terms, 200, 1))[0] : null;
-        const total = this.nav.remember({ label, place, note }, lm => this.deps.saveLandmark(lm));
+        const spot = place || this.pos;
+        const landmark = { label, place_name: place?.name, note, lat: spot.lat, lng: spot.lng };
+        const total = this.deps.saveLandmark(landmark);
+        this.personal.push(landmark);
         return { saved: true, at: place ? placeText(place) : 'where they are now', landmarks_on_their_map: total };
       },
       note_interest: ({ interest }) => {
@@ -140,6 +191,7 @@ export class Walk {
         return { saved: true, their_interests: this.profile.likes };
       },
       start_way_back: async () => {
+        if (!this.nav) return { note: "There's no destination yet, so no way back." };
         if (this.phase !== 'there') return { note: 'Already on the way back.' };
         await this.headBack();
         return { switched: true, note: 'You are now on the way back and they lead. Hand over in one short, casual line; no directions.' };
@@ -147,8 +199,28 @@ export class Walk {
     };
   }
 
+  // They picked where to go (by voice or on the screen): the route there becomes THE ROUTE.
+  async goTo(number) {
+    const o = this.options.find(x => x.n === number);
+    if (!o) return { error: 'No such option. Call find_destination first.' };
+    const dest = { name: o.name, kind: [o.type, o.kind].filter(Boolean).join(' > '), lat: o.lat, lng: o.lng };
+    this.onHighlight(number);
+    const route = await this.deps.buildRoute(this.pos, dest, { quick: true, personal: this.personal, likes: this.profile.likes });
+    if (!this.start) this.start = { ...this.pos, label: 'where they started' };
+    this.arrivedSaid = false;
+    this.setRoute(route, true);
+    this.onDestination(dest, route);
+    return { going_to: optionText(o), note: "THE ROUTE there is set (see the system note). React to where they're going in a few words, like a friend, then carry on as on the way there." };
+  }
+
   // --- The walker moves ------------------------------------------------------------------------
   async position(raw) {
+    if (!this.nav) {
+      // Still picking where to go: just keep up with where they are.
+      if (!this.here?.fixed) this.here = raw;
+      if (!this.aroundCache || distance(this.aroundCache.pos, this.pos) >= 25) this.refreshAround();
+      return;
+    }
     const nav = this.nav;
     nav.update(raw);
     if (!this.aroundCache || distance(this.aroundCache.pos, nav.pos) >= 25) this.refreshAround();
@@ -200,12 +272,11 @@ export class Walk {
 
   // The turnover: a fresh route back to the start, and the mind switches roles.
   async headBack() {
-    if (this.phase !== 'there') return;
+    if (this.phase !== 'there' || !this.nav) return;
     this.phase = 'back';
     const raw = this.nav.raw || this.nav.pos, correction = this.nav.correction;
-    const back = await this.deps.buildRoute(this.nav.pos, { ...this.start, name: this.start.label || 'where they started' }, { quick: true, personal: this.nav.personal, likes: this.profile.likes });
-    const personal = this.nav.personal;
-    this.nav = new Navigator(back, personal);
+    const back = await this.deps.buildRoute(this.nav.pos, { ...this.start, name: this.start.label || 'where they started' }, { quick: true, personal: this.personal, likes: this.profile.likes });
+    this.nav = new Navigator(back, this.personal);
     this.nav.correction = correction; // keep the walker's own position fix
     this.nav.update(raw);
     this.arrivedSaid = false;

@@ -1,5 +1,7 @@
 import { log } from './log.js';
-import { loadKakao, searchPlaces, placesNear, findNear, SURROUNDING_TYPES } from './kakao.js';
+import { loadKakao, placesNear, findNear, SURROUNDING_TYPES } from './kakao.js';
+import { destinationOptions, optionText } from './places.js';
+import { ensureMap, showMe, showOptions, highlight, showRouteLine } from './mapview.js';
 import { buildRoute } from './route.js';
 import { PROVIDERS, createVoice } from './providers/index.js';
 import { MIND_MODELS } from './mind.js';
@@ -157,44 +159,83 @@ function currentPosition() {
   });
 }
 
-let start = null;
+let start = null; // where they are now: for searching and as the start of the route
+let options = []; // what the search found, numbered like the pins on the map
+
+// Find where they are and put them on the map; a problem shows right under the map.
+async function findMe() {
+  $('where').textContent = 'Finding where you are…';
+  $('where').className = 'muted';
+  try {
+    start = await currentPosition();
+    showMe(start);
+    $('where').textContent = '';
+    log('start:', start.lat.toFixed(5), start.lng.toFixed(5), `±${Math.round(start.accuracy || 0)} m`);
+    return start;
+  } catch (err) {
+    start = null;
+    $('where').textContent = err.message;
+    $('where').className = 'warning';
+    log('no location:', err.message);
+    return null;
+  }
+}
 
 async function onSearch(e) {
   e.preventDefault();
   const q = $('search-input').value.trim();
   if (!q) return;
-  const ul0 = $('results');
-  ul0.innerHTML = '<li class="muted">Finding where you are…</li>';
-  try {
-    start = await currentPosition();
-  } catch (err) {
-    start = null;
-    log('no location:', err.message);
-    ul0.innerHTML = '';
-    const li = document.createElement('li');
-    li.className = 'warning';
-    li.textContent = err.message;
-    ul0.appendChild(li);
-    return;
+  if (!walk && !start && !await findMe()) return;
+  $('results').innerHTML = '<li class="muted">Searching…</li>';
+  // In a call the guide gets the same options, with the way to each, and helps pick.
+  const found = await destinationOptions(walk ? walk.pos : start, q, { detailed: walk ? 3 : 0 });
+  log(`search "${q}": ${found.length} results`);
+  showFound(found);
+  if (walk) {
+    walk.options = found;
+    walk.talk.event(`They typed "${q}" in the search box. The matches are numbered pins on their screen: ${found.map(optionText).join(' | ') || 'none'}. Help them pick, talking as if they can't see the screen.`);
   }
-  log('start:', start.lat.toFixed(5), start.lng.toFixed(5), `±${Math.round(start.accuracy || 0)} m`);
-  const results = await searchPlaces(q, start);
-  log(`search "${q}": ${results.length} results`);
+}
+
+// The options as numbered pins on the map and a list under it; tapping either one picks it.
+function showFound(found) {
+  options = found;
   const ul = $('results');
-  ul.innerHTML = '';
-  for (const p of results.slice(0, 8)) {
+  ul.innerHTML = found.length ? '' : '<li class="muted">Nothing like that nearby. Try another name.</li>';
+  for (const o of found) {
     const li = document.createElement('li');
-    li.innerHTML = `${p.place_name}<br><small>${p.road_address_name || p.address_name} · ${p.distance} m</small>`;
-    // The kind of place ("음식점 > 패스트푸드 > 햄버거") lets the guide open with a fitting comment.
-    li.onclick = () => showRoute({ name: p.place_name, kind: p.category_name, lat: Number(p.y), lng: Number(p.x) });
+    li.dataset.n = o.n;
+    li.innerHTML = `<b class="num">${o.n}</b>${o.name}<br><small>${[o.street, `${Math.round(o.distance)} m`, o.station && `near ${o.station.name}`].filter(Boolean).join(' · ')}</small>`;
+    li.onclick = () => pick(o.n);
     ul.appendChild(li);
   }
+  if (found.length) showOptions(found, pick, walk ? walk.pos : start);
+}
+
+function markChosen(n) {
+  highlight(n);
+  for (const li of $('results').children) li.classList.toggle('chosen', li.dataset.n === String(n));
+}
+
+// They picked one on the screen.
+async function pick(n) {
+  const o = options.find(x => x.n === n);
+  if (!o) return;
+  markChosen(n);
+  if (walk) {
+    // In a call: the route is set and the guide confirms it by voice.
+    walk.options = options;
+    await walk.goTo(n);
+    walk.talk.event(`They picked one on the screen: ${optionText(o)}. The route there is set. React to where they're going in a few words, like a friend, and carry on.`);
+    return;
+  }
+  showRoute({ name: o.name, kind: [o.type, o.kind].filter(Boolean).join(' > '), lat: o.lat, lng: o.lng });
 }
 
 let route;
 
 async function showRoute(dest) {
-  $('results').innerHTML = '';
+  for (const id of ['start-btn', 'fix-start-btn', 'start-info']) $(id).hidden = false;
   $('route-section').hidden = false;
   $('route-title').textContent = dest.name;
   $('route-summary').textContent = 'Finding the walking route…';
@@ -203,6 +244,7 @@ async function showRoute(dest) {
 
   const p = getProfile(profile());
   route = await buildRoute(start, dest, { personal: p.landmarks, likes: p.likes || [] });
+  showRouteLine(route.line);
   prepareWalk(); // the guide's opener gets written now, so it plays the moment they tap Start
   log(`route: ${route.distance} m, ${route.decisions.length} turns, built in ${route.buildMs} ms${route.streetsError ? `, no street layout (${route.streetsError})` : ''}`);
   $('route-summary').textContent = `${route.distance} m · about ${Math.round(route.time / 60)} min · ${route.decisions.length} turns`;
@@ -292,18 +334,29 @@ function pastOpeners() {
 
 // The walk is set up as soon as the route is shown: the guide writes its opener while the
 // walker is still looking at the route. It only speaks once they tap Start.
-function prepareWalk() {
-  $('guide-check').hidden = true;
-  if (!settings.claudeKey()) return;
+function newWalk(withRoute) {
   const p = getProfile(profile());
   const lineVoice = { say: line => voice.say(line), utterance: () => voice.utterance(), cut: () => voice?.cut() }; // the real voice connects on Start
-  prepared = new Walk({
-    voice: lineVoice, apiKey: settings.claudeKey(), model: settings.mindModel(), start, route,
-    profile: { likes: p.likes || [] },
+  return new Walk({
+    voice: lineVoice, apiKey: settings.claudeKey(), model: settings.mindModel(), start, route: withRoute,
+    profile: { likes: p.likes || [], landmarks: p.landmarks || [] },
     deps: {
-      buildRoute, findNear, placesNear, surroundingTypes: SURROUNDING_TYPES,
+      buildRoute, findNear, placesNear, surroundingTypes: SURROUNDING_TYPES, destinationOptions,
       saveLandmark: lm => { const n = saveLandmark(profile(), lm); showProfile(); return n; },
       saveInterest: i => saveInterest(profile(), i),
+    },
+    onOptions: found => showFound(found),
+    onHighlight: n => markChosen(n),
+    onDestination: (dest, r) => {
+      route = r;
+      if (walkLog) walkLog.data.dest = dest;
+      showRouteLine(r.line);
+      $('route-section').hidden = false;
+      $('route-title').textContent = dest.name;
+      $('route-summary').textContent = `${r.distance} m · about ${Math.max(1, Math.round(r.time / 60))} min`;
+      for (const id of ['start-btn', 'fix-start-btn', 'start-picker', 'start-info', 'guide-check']) $(id).hidden = true;
+      $('turns').innerHTML = '';
+      $('back-btn').hidden = false;
     },
     log: (type, data) => { log(type, data ?? ''); walkLog?.add('event', { what: type, data }); },
     onLine: text => addLine('guide', text),
@@ -312,6 +365,12 @@ function prepareWalk() {
     onRoute: r => { showRouteOnMap(r.line); walkLog?.add('route', { m: r.distance, turns: r.decisions.length }); },
     onPhase: ph => { showPhase(ph); addLine('note', '— heading back —'); walkLog?.add('phase', { phase: ph }); },
   });
+}
+
+function prepareWalk() {
+  $('guide-check').hidden = true;
+  if (!settings.claudeKey()) return;
+  prepared = newWalk(route);
   prepared.route0 = route;
   if (settings.openaiKey()) { preparedVoice = makeVoice(); preparedVoice.prefetch(); }
   prepared.talk.hold();
@@ -337,17 +396,44 @@ async function startWalk() {
   showPhase('there');
   await voice.start(); // inside the tap, so iOS allows the microphone and audio
   walk.talk.release(); // the opener (written already) plays now
+  callStarted();
+}
+
+// Talk first, pick where to go together: the call starts on the map, before any destination.
+async function startCall() {
+  if (route && prepared?.route0 === route) return startWalk(); // a place is already picked on the screen
+  if (!settings.openaiKey()) return log('Enter the OpenAI API key in Settings (for the voice)');
+  if (!settings.claudeKey()) return log('Enter the Claude API key in Settings (for what the guide says)');
+  if (!start && !await findMe()) return;
+  $('transcript').innerHTML = '';
+  $('walk-section').hidden = false;
+  $('talk-btn').hidden = true;
+  $('back-btn').hidden = true; // no way back before there's a destination
+  walkLog = new WalkLog({ profile: profile(), provider: 'openai+claude', model: `${settings.model()} / ${settings.mindModel()}`, voice: settings.voice(), start, dest: null });
+  walk = newWalk(null);
+  const same = preparedVoice && preparedVoice.model === settings.model() && preparedVoice.voice === settings.voice() && preparedVoice.apiKey === settings.openaiKey();
+  voice = same ? preparedVoice : makeVoice();
+  preparedVoice = null;
+  showPhase('there');
+  walk.plan({ ...start, accuracy: start.accuracy || 50 }, pastOpeners()); // the hello is written while the line connects
+  await voice.start(); // inside the tap, so iOS allows the microphone and audio
+  callStarted();
+}
+
+// Both ways into a call end here: follow GPS, keep the screen on.
+async function callStarted() {
   walk.live();
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not critical */ }
-
   watchId = navigator.geolocation?.watchPosition(g => {
     const raw = { lat: g.coords.latitude, lng: g.coords.longitude, accuracy: g.coords.accuracy };
     walk.position(raw).catch(err => log('ERROR', err.message));
-    walkLog.add('gps', { lat: walk.nav.pos.lat, lng: walk.nav.pos.lng, acc: Math.round(raw.accuracy), corrected: !!walk.nav.correction });
-    showPosition(walk.nav.pos);
-    $('nav-status').textContent = walk.nav.status(walk.phase).replace('[status] ', '');
+    const pos = walk.pos;
+    walkLog.add('gps', { lat: pos.lat, lng: pos.lng, acc: Math.round(raw.accuracy), corrected: !!walk.nav?.correction });
+    showMe(pos);
+    showPosition(pos);
+    $('nav-status').textContent = walk.nav ? walk.nav.status(walk.phase).replace('[status] ', '') : `Choosing where to go · GPS ±${Math.round(raw.accuracy)} m`;
   }, e => log('GPS error:', e.message), { enableHighAccuracy: true, maximumAge: 0 });
-  costTimer = setInterval(() => showPhase(walk.phase), 5000);
+  costTimer = setInterval(() => walk && showPhase(walk.phase), 5000);
 }
 
 async function headBack() {
@@ -365,6 +451,7 @@ function stopWalk() {
   walkLog?.save();
   walk?.close();
   walk = null;
+  $('talk-btn').hidden = false;
   $('walk-section').hidden = true;
   $('route-section').hidden = false;
   showWalks();
@@ -372,6 +459,7 @@ function stopWalk() {
 }
 
 $('start-btn').onclick = () => startWalk().catch(err => log('ERROR', err.message));
+$('talk-btn').onclick = () => startCall().catch(err => log('ERROR', err.message));
 $('back-btn').onclick = () => headBack().catch(err => log('ERROR', err.message));
 $('stop-btn').onclick = stopWalk;
 $('search-form').addEventListener('submit', e => onSearch(e).catch(err => log('ERROR', err.message)));
@@ -379,5 +467,9 @@ $('search-form').addEventListener('submit', e => onSearch(e).catch(err => log('E
 setupSettings();
 setupProfile();
 loadKakao()
-  .then(() => log('Kakao ready'))
+  .then(async () => {
+    log('Kakao ready');
+    // The map opens on where they are; without a location it shows central Seoul (only for looking).
+    if (!await findMe()) ensureMap({ lat: 37.5729, lng: 127.0016 });
+  })
   .catch(err => log('ERROR', err.message));
