@@ -25,31 +25,53 @@ export class Talk {
     this.state = 'idle'; // idle | thinking | speaking
     this.listening = false; // the walker is speaking right now
     this.awaiting = 0; // bits of speech whose text hasn't arrived yet
+    this.segments = new Map(); // each bit of speech: when it started, how long, whether the guide was talking
     this.gate = Promise.resolve(); // lines wait here until the walk has really started
   }
 
   // Think ahead but don't speak yet (the opener is written while the walker looks at the route).
   hold() { this.gate = new Promise(resolve => { this.release = resolve; }); }
 
-  walkerStarted() {
+  walkerStarted(id) {
     this.listening = true;
     this.awaiting++;
-    if (this.state === 'speaking') { this.voice.cut(); this.cutOff = true; }
-    if (this.state === 'thinking' && this.abortable) this.abort?.();
+    this.segments.set(id, { start: Date.now(), duringSpeech: this.state === 'speaking' });
+    // Only a real interruption stops the guide: talking for half a second. A blip of noise, or the
+    // guide's own voice coming back through the mic, doesn't cut it off after one word.
+    clearTimeout(this.interruptTimer);
+    this.interruptTimer = setTimeout(() => {
+      if (!this.listening) return;
+      if (this.state === 'speaking') { this.voice.cut(); this.cutOff = true; }
+      if (this.state === 'thinking' && this.abortable) this.abort?.();
+    }, 500);
   }
 
   // They paused. The text of what they said arrives a moment later (walkerSaid), and may even
   // arrive after they've started talking again, so answering waits for both.
-  walkerStopped() {
+  walkerStopped(id) {
     this.listening = false;
+    clearTimeout(this.interruptTimer);
+    const seg = this.segments.get(id);
+    if (seg) seg.ms = Date.now() - seg.start;
     this.kick();
   }
 
-  walkerSaid(text) {
+  // Returns whether it counts as something they said (shown and answered).
+  walkerSaid(text, id) {
     this.awaiting = Math.max(0, this.awaiting - 1);
+    const seg = this.segments.get(id);
+    this.segments.delete(id);
     const clean = (text || '').trim();
-    if (clean.replace(/[^\p{L}\p{N}]/gu, '').length >= 2) this.heard.push(clean); // ignore noise and lone "uh"
+    const words = clean.split(/\s+/).filter(Boolean).length;
+    // Speech-to-text makes words out of noise ("please", "thank you"), and the guide's own voice
+    // can come back through the mic: a short blip while the guide talked, or a very short one at any
+    // time, isn't them talking.
+    const phantom = seg?.ms != null && ((seg.duringSpeech && seg.ms < 700 && words <= 3) || seg.ms < 250);
+    const real = !phantom && clean.replace(/[^\p{L}\p{N}]/gu, '').length >= 2;
+    if (real) this.heard.push(clean);
+    else if (clean) this.log('ignored (noise or echo)', { text: clean, ms: seg?.ms });
     this.kick();
+    return real;
   }
 
   // An app moment. With a key, a newer moment of the same kind replaces an unhandled older one.

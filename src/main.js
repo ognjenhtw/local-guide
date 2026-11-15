@@ -1,7 +1,7 @@
 import { log } from './log.js';
 import { loadKakao, placesNear, findNear, SURROUNDING_TYPES } from './kakao.js';
 import { destinationOptions, optionText } from './places.js';
-import { ensureMap, showMe, showOptions, highlight, showRouteLine, showMarkers } from './mapview.js';
+import { ensureMap, showMe, showOptions, highlight, showRouteLine, showMarkers, relayout } from './mapview.js';
 import { savePhoto, photoURL, shrinkPhoto } from './photos.js';
 import { checkpointsOf, BRAND_COLORS } from './checkpoints.js';
 import { showView } from './streetview.js';
@@ -307,6 +307,24 @@ $('start-form').onsubmit = async e => {
   if (q) listStartOptions(await findNear(start, [q], 800, 10));
 };
 
+// --- The map during a walk ---------------------------------------------------------------
+// Once the route is set the map folds away: they should learn the way, not stare at a map. It can
+// be opened, and every open and close is logged (how much each walker leans on the map).
+
+function foldMap() {
+  $('home-map').hidden = true;
+  $('map-btn').hidden = false;
+  $('map-btn').textContent = 'Show map';
+}
+
+$('map-btn').onclick = () => {
+  const open = $('home-map').hidden;
+  $('home-map').hidden = !open;
+  $('map-btn').textContent = open ? 'Hide map' : 'Show map';
+  if (open) relayout();
+  walkLog?.add('event', { what: open ? 'map opened' : 'map closed', phase: walk?.phase || null, next_turn: walk?.nav ? walk.nav.next + 1 : null });
+};
+
 // --- Checkpoints: what each turn looks like ---------------------------------------------
 
 let checkpoints = [], cpIndex = 0, cpFlippedAt = 0;
@@ -357,13 +375,13 @@ let walk, voice, walkLog, watchId, wakeLock, costTimer, prepared, preparedVoice;
 function makeVoice() {
   return createVoice({
     apiKey: settings.openaiKey(), model: settings.model(), voice: settings.voice(),
-    onSpeechStart: () => { walk?.noteSpeech(); walk?.talk.walkerStarted(); },
-    onSpeechStop: () => { walkLog?.add('event', { what: 'walker stopped' }); walk?.talk.walkerStopped(); },
+    onSpeechStart: id => { walk?.noteSpeech(); walk?.talk.walkerStarted(id); },
+    onSpeechStop: id => { walkLog?.add('event', { what: 'walker stopped' }); walk?.talk.walkerStopped(id); },
     onPlaying: () => walkLog?.add('event', { what: 'voice playing' }), // with 'walker stopped': the reply delay
-    onUtterance: text => {
-      // Lone noises ("uh", a stray syllable) aren't shown or answered.
-      if (text.replace(/[^\p{L}\p{N}]/gu, '').length >= 2) { addLine('walker', text.trim()); walkLog.add('heard', { text }); }
-      walk?.talk.walkerSaid(text);
+    onUtterance: (text, id) => {
+      // Noise, echo and lone "uh"s aren't shown or answered.
+      if (walk?.talk.walkerSaid(text, id)) { addLine('walker', text.trim()); walkLog.add('heard', { text }); }
+      else if (text.trim()) walkLog?.add('ignored', { text });
     },
   });
 }
@@ -408,6 +426,7 @@ function newWalk(withRoute) {
       if (walkLog) walkLog.data.dest = dest;
       showRouteLine(r.line);
       setCheckpoints(r);
+      foldMap();
       $('route-section').hidden = false;
       $('route-title').textContent = dest.name;
       $('route-summary').textContent = `${r.distance} m · about ${Math.max(1, Math.round(r.time / 60))} min`;
@@ -457,6 +476,7 @@ async function startWalk() {
   voice = same ? preparedVoice : makeVoice();
   preparedVoice = null;
   showPhase('there');
+  foldMap();
   await voice.start(); // inside the tap, so iOS allows the microphone and audio
   walk.talk.release(); // the opener (written already) plays now
   callStarted();
@@ -519,6 +539,9 @@ function stopWalk() {
   walk = null;
   $('talk-btn').hidden = false;
   $('cp-check').hidden = true;
+  $('home-map').hidden = false;
+  $('map-btn').hidden = true;
+  relayout();
   $('walk-section').hidden = true;
   $('route-section').hidden = false;
   showWalks();

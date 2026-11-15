@@ -80,3 +80,5 @@ button.pin.chosen { background: #1f6feb; color: #fff; transform: scale(1.25); }
 .brand { position: absolute; left: 8px; top: 8px; z-index: 2; padding: 3px 8px; border-radius: 6px; font-weight: 800; font-size: 13px; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
 #cp-none { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; margin: 0; color: #ccc; }
 #cp-check { width: 100%; margin-top: 8px; }
+
+#map-btn { width: 100%; margin: 4px 0 8px; }
