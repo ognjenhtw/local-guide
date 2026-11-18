@@ -143,6 +143,7 @@ function browserName() {
   if (/FxiOS/.test(ua)) return 'Firefox';
   if (/EdgiOS/.test(ua)) return 'Edge';
   if (/(FBAN|FBAV|Instagram|KAKAOTALK|Line|NAVER|Whale)/i.test(ua)) return 'an app\'s built-in browser';
+  if (/Android/.test(ua)) return /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /Chrome/.test(ua) ? 'Chrome' : 'this browser';
   if ((/iPhone/.test(ua) || isIPad()) && /Safari/.test(ua) && !/Chrome/.test(ua)) return 'Safari';
   if (!/iPhone|Android/.test(ua) && !isIPad()) return 'a computer browser';
   return 'this browser';
@@ -156,7 +157,11 @@ async function blockedMessage(e) {
   const ua = navigator.userAgent;
   const device = isIPad() ? 'iPad' : /iPhone/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android phone' : 'computer';
   log('browser:', ua, '| touch points:', navigator.maxTouchPoints);
-  const where = b === 'Safari'
+  const where = device === 'Android phone'
+    ? (b === 'Chrome' || b === 'Samsung Internet'
+      ? `Location is blocked for this page in ${b}. Tap the icon left of the address → Permissions → Location → Allow, then reload. Also check the phone's Settings → Location is on.`
+      : `This page is open in ${b}. Scan the QR code with the camera so it opens in Chrome (keys from the QR code are only saved in the browser that opened it).`)
+    : b === 'Safari'
     ? `Safari has location blocked for this website. Open Safari's page menu → Website Settings → Location → Allow, then reload. If that doesn't help: ${device} Settings → Privacy & Security → Location Services (on) → Safari Websites → While Using the App.`
     : b === 'Chrome' || b === 'Firefox' || b === 'Edge'
       ? `This page is open in ${b}, not Safari. Either allow location for ${b} (${device} Settings → ${b} → Location → While Using the App) and reload, or scan the QR code again so it opens in Safari. Keys from the QR code are only saved in the browser that opened it.`
