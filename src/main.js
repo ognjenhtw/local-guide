@@ -132,13 +132,19 @@ function setupProfile() {
 // checks the start with the walker anyway.
 // Which browser the page is running in (a link opened from the Camera goes to the default browser,
 // which may not be the Safari the walker normally uses).
+// iPad Safari presents itself as a Mac ("desktop website" is on by default), so a "Mac" with a
+// touch screen is an iPad.
+function isIPad() {
+  return /iPad/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+}
 function browserName() {
   const ua = navigator.userAgent;
   if (/CriOS/.test(ua)) return 'Chrome';
   if (/FxiOS/.test(ua)) return 'Firefox';
   if (/EdgiOS/.test(ua)) return 'Edge';
   if (/(FBAN|FBAV|Instagram|KAKAOTALK|Line|NAVER|Whale)/i.test(ua)) return 'an app\'s built-in browser';
-  if (/iPhone|iPad/.test(ua) && /Safari/.test(ua)) return 'Safari';
+  if ((/iPhone/.test(ua) || isIPad()) && /Safari/.test(ua) && !/Chrome/.test(ua)) return 'Safari';
+  if (!/iPhone|Android/.test(ua) && !isIPad()) return 'a computer browser';
   return 'this browser';
 }
 
@@ -147,12 +153,17 @@ async function blockedMessage(e) {
   let state = 'unknown';
   try { state = (await navigator.permissions.query({ name: 'geolocation' })).state; } catch { /* not supported */ }
   const b = browserName();
+  const ua = navigator.userAgent;
+  const device = isIPad() ? 'iPad' : /iPhone/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android phone' : 'computer';
+  log('browser:', ua, '| touch points:', navigator.maxTouchPoints);
   const where = b === 'Safari'
-    ? 'Safari has location blocked for this website. Tap "aA" (left of the address) → Website Settings → Location → Allow, then reload.'
+    ? `Safari has location blocked for this website. Open Safari's page menu → Website Settings → Location → Allow, then reload. If that doesn't help: ${device} Settings → Privacy & Security → Location Services (on) → Safari Websites → While Using the App.`
     : b === 'Chrome' || b === 'Firefox' || b === 'Edge'
-      ? `This page is open in ${b}, not Safari. Either allow location for ${b} (iPhone Settings → ${b} → Location → While Using the App) and reload, or open ognjenhtw.github.io/local-guide in Safari. Keys from the QR code are only saved in the browser that opened it.`
-      : `This page is open in ${b}. Open ognjenhtw.github.io/local-guide in Safari instead.`;
-  return `${where} [${b}, location permission: ${state}, error ${e.code}: ${e.message}]`;
+      ? `This page is open in ${b}, not Safari. Either allow location for ${b} (${device} Settings → ${b} → Location → While Using the App) and reload, or scan the QR code again so it opens in Safari. Keys from the QR code are only saved in the browser that opened it.`
+      : b === 'a computer browser'
+        ? 'Location is blocked for this page in this browser: allow it in the site settings (the icon left of the address) and reload. For walks, use a phone.'
+        : `This page is open in ${b}. Scan the QR code with the Camera app so it opens in Safari (keys from the QR code are only saved in the browser that opened it).`;
+  return `${where} [${b}, ${device}, location permission: ${state}, error ${e.code}: ${e.message}]`;
 }
 function currentPosition() {
   return new Promise((resolve, reject) => {
