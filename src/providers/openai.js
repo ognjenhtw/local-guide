@@ -10,9 +10,11 @@ const PRICES = {
   'gpt-realtime-2.1-mini': [10, 20, 0.6, 2.4],
 };
 const TRANSCRIBE_PER_MIN = 0.003; // gpt-4o-mini-transcribe
-// Words that come up on these walks, so speech-to-text spells them right (measured 2026-11-15:
-// "Parknic" instead of "Park Mc"/"Parknik", no slower).
-const HINT = 'Someone walking in Seoul, talking to a friend on the phone about the way. Words that may come up: Parknic, Double Six Burger, Jongno, Yulgok-ro, Dongdaemun, Hyehwa, Euljiro, 7-Eleven, GS25, CU, Paik\'s Coffee, Olive Young, rotary, roundabout, crosswalk, left, right, straight, turn, block, corner.';
+// No transcription prompt (hint word list), on purpose. Measured 2026-11-18: with any prompt,
+// even "Walking directions in Seoul.", noise and traffic were transcribed as the prompt itself or
+// as made-up sentences full of its words (8/8 noise clips; without a prompt: 8/8 empty). Walkers
+// "said" things they never said. Without it, real speech still came out right (4/5 exact,
+// "Paik's" heard as "Pace").
 
 // Measured 2026-11-14: with this, the mini voice read 5/5 lines exactly, first sound in ~0.4-0.8 s.
 const READ = line => `You are the voice of Local, a relaxed, warm friend in their late twenties on the phone. Say the line below out loud, word for word, exactly as written: nothing before it, nothing after it, no changes. Sound natural and easy-going, like you mean it; smile where it's funny.\n\nLINE: ${line}`;
@@ -86,7 +88,7 @@ export class OpenAIVoice {
       output_modalities: ['audio'],
       audio: {
         input: {
-          transcription: { model: 'gpt-4o-mini-transcribe', language: 'en', prompt: HINT },
+          transcription: { model: 'gpt-4o-mini-transcribe', language: 'en' },
           noise_reduction: { type: 'near_field' }, // earbud mic close to the mouth
           // The app decides when to answer (create_response: false) and cuts the voice itself
           // when the walker starts talking (interrupt_response: false + cut()).
